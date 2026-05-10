@@ -9,6 +9,9 @@
 #include "Model/Material.h"
 #include "Texture/TextureLoader.h"
 #include "Camera/Camera.h"
+#include "Rendering/RenderingSystem.h"
+#include "Shaders/DeferredGeometryPass.h"
+#include "Shaders/DeferredLightPass.h"
 
 struct alignas(256) SceneConstantBuffer {
     DirectX::XMFLOAT4X4 worldViewProj;
@@ -34,6 +37,7 @@ public:
     bool Initialize(HWND hwnd);
     void RenderFrame();
     void Shutdown();
+    UINT GetSRVDescriptorSize() const { return m_srvDescriptorSize; }
 
     // Input handling
     void OnMouseWheel(int delta);
@@ -54,8 +58,8 @@ private:
     void CreateSwapChain(HWND hwnd);
     void CreateDescriptorHeaps();
     void CreateDepthStencil();
-    void CreateRootSignature();
-    void CreatePipelineState();
+    //void CreateRootSignature();
+    //void CreatePipelineState();
     void CreateSRVHeap();
     void CreateBuffers();
     void CreateConstantBuffers();
@@ -66,6 +70,21 @@ private:
     void WaitForGpu();
     void WaitForPreviousFrame();
     void SignalFrame();
+
+    void CreateGeometryPassRootSignature();
+    void CreateGeometryPassPipelineState();
+    void CreateLightingPassResources();
+
+    // Новая PSO и Root Signature для геометрического прохода
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> m_geometryRootSignature;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_geometryPSO;
+
+    // GBuffer дескрипторы
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_gbufferRtvHeap;
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_gbufferSrvHeap;
+
+    // Система рендеринга
+    std::unique_ptr<RenderingSystem> m_renderingSystem;
 
     // D3D12 objects
     Microsoft::WRL::ComPtr<ID3D12Device> m_device;
