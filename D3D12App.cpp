@@ -11,6 +11,8 @@
 #include <stdexcept>
 #include <windows.h>
 #include <Shaders/TessellationShaders.h>
+#include <chrono>
+#include <functional>
 
 
 using namespace DirectX;
@@ -41,6 +43,13 @@ D3D12App::D3D12App()
         m_cbvDataBegin[i] = nullptr;
     }
 
+    m_useFrustumCulling = true;
+
+    // Обнуляем плоскости фрустума
+    for (int i = 0; i < 6; i++) {
+        m_frustumPlanes[i] = XMFLOAT4(0, 0, 0, 0);
+    }
+
     // Инициализация структур
     ZeroMemory(&m_vertexBufferView, sizeof(m_vertexBufferView));
     ZeroMemory(&m_indexBufferView, sizeof(m_indexBufferView));
@@ -65,6 +74,8 @@ void D3D12App::Shutdown() {
     catch (...) {
         OutputDebugStringA("WaitForGpu failed during shutdown\n");
     }
+
+    DestroyBVH();
 
     // Закрываем событие синхронизации
     if (m_fenceEvent) {
@@ -446,6 +457,12 @@ bool D3D12App::Initialize(HWND hwnd) {
                 v.position.y -= centerY;
                 v.position.z -= centerZ;
             }
+
+            // ВАЖНО: Выводим информацию о модели
+            char buf[256];
+            sprintf_s(buf, "Model centered. Size: %.2f, Center was: (%.2f,%.2f,%.2f)\n",
+                maxSize, centerX, centerY, centerZ);
+            OutputDebugStringA(buf);
         }
 
         // Загружаем текстуры
@@ -490,7 +507,22 @@ bool D3D12App::Initialize(HWND hwnd) {
         // Создаем пайплайн тесселяции (ДОБАВЛЕНО)
         CreateTessellationPipeline();
 
-        // После CreateTessellationPipeline();
+        // Генерируем инстансы (НОВОЕ)
+
+        GenerateInstances();
+        CreateInstanceBuffer();
+
+        // Строим BVH дерево
+        BuildBVH();
+
+
+        CreateInstancedTessellationPipeline();
+
+
+        // Инициализируем все инстансы как видимые
+        m_visibleInstances = m_instances;
+        m_instanceCount = (uint32_t)m_instances.size();
+
         OutputDebugStringA("Checking tessellation initialization...\n");
 
         for (uint32_t i = 0; i < kFrameCount; ++i) {
@@ -867,6 +899,26 @@ void D3D12App::RenderFrame() {
         UpdateConstantBuffer(m_frameIndex);
         UpdateTessellationConstantBuffer(m_frameIndex); // Обновляем CB тесселяции
 
+        // Обновляем видимые инстансы (frustum culling)
+        if (m_useInstancing) {
+            UpdateVisibleInstances();
+        }
+
+        static int titleCounter = 0;
+        if (titleCounter++ % 30 == 0 && m_useInstancing) {
+            char title[256];
+            if (m_useFrustumCulling) {
+                sprintf_s(title, "D3D12 | Cull: ON (BVH:%s) | Vis: %u/%zu | Cam: (%.0f,%.0f,%.0f)",
+                    m_useBVH ? "ON" : "OFF",
+                    m_instanceCount, m_instances.size(),
+                    m_camera.GetPosition().x, m_camera.GetPosition().y, m_camera.GetPosition().z);
+            }
+            else {
+                sprintf_s(title, "D3D12 | Cull: OFF | Total: %zu", m_instances.size());
+            }
+            SetWindowTextA(GetActiveWindow(), title);
+        }
+
         m_viewport = { 0.0f, 0.0f, (float)kWidth, (float)kHeight, 0.0f, 1.0f };
         m_scissorRect = { 0, 0, (LONG)kWidth, (LONG)kHeight };
 
@@ -920,6 +972,13 @@ void D3D12App::RenderFrame() {
         }
 
 
+        // Инстансинг
+        renderData.useInstancing = m_useInstancing;
+        renderData.instanceBuffer = m_instanceBuffer.Get();
+        renderData.instanceCount = m_instanceCount;
+        renderData.instancedPSO = m_instancedTessPSO.Get();
+        renderData.instancedRootSig = m_instancedTessRootSig.Get();
+
         //char buffer[256];
         //sprintf_s(buffer, "Render params: useTess=%d, tessPSO=%p, tessRootSig=%p, tessCBV=%llx\n",
         //    renderData.useTessellation,
@@ -956,23 +1015,6 @@ void D3D12App::RenderFrame() {
                 OutputDebugStringA("ERROR: Tessellation CB data is null!\n");
             }
         }
-
-
-        // Вызываем deferred rendering с поддержкой тесселяции
-        m_renderingSystem->Render(
-            m_commandList.Get(),
-            m_depthStencil.Get(),
-            dsvHandle,
-            rtvHandle,
-            m_geometryRootSig.Get(),
-            m_geometryPSO.Get(),
-            &renderData
-        );
-
-        // Новые параметры для тесселяции
-        renderData.useTessellation = m_useTessellation;
-        renderData.tessellationPSO = m_tessellationPSO.Get();
-        renderData.tessellationRootSig = m_tessellationRootSig.Get();
 
         // Вызываем deferred rendering с поддержкой тесселяции
         m_renderingSystem->Render(
@@ -1176,7 +1218,177 @@ void D3D12App::OnKeyDown(WPARAM wParam) {
             OutputDebugStringA("=== Tessellation Visualization OFF ===\n");
         }
         break;
+    case 'I':  // Переключение инстансинга
+        m_useInstancing = !m_useInstancing;
+        if (m_useInstancing) {
+            OutputDebugStringA("Instancing: ON\n");
+        }
+        else {
+            OutputDebugStringA("Instancing: OFF\n");
+        }
+        break;
+    case 'C':  // Переключение frustum culling
+        m_useFrustumCulling = !m_useFrustumCulling;
+        if (m_useFrustumCulling) {
+            OutputDebugStringA("Frustum Culling: ON\n");
+        }
+        else {
+            OutputDebugStringA("Frustum Culling: OFF\n");
+        }
+        break;
+    case 'T':  // Тестовый режим: показать только объекты перед камерой
+    {
+        m_visibleInstances.clear();
+        XMFLOAT3 camPos = m_camera.GetPosition();
+
+        for (const auto& instance : m_instances) {
+            float posX = instance.worldMatrix._41;
+            float posZ = instance.worldMatrix._43;
+
+            // Простая проверка: только объекты с Z > позиции камеры
+            if (posZ > camPos.z) {
+                m_visibleInstances.push_back(instance);
+            }
+        }
+
+        m_instanceCount = (uint32_t)m_visibleInstances.size();
+
+        // Обновить буфер
+        if (!m_visibleInstances.empty() && m_instanceBuffer) {
+            void* data;
+            D3D12_RANGE readRange = { 0, 0 };
+            m_instanceBuffer->Map(0, &readRange, &data);
+            memcpy(data, m_visibleInstances.data(), m_visibleInstances.size() * sizeof(InstanceData));
+            m_instanceBuffer->Unmap(0, nullptr);
+        }
+
+        char buf[128];
+        sprintf_s(buf, "Test mode: %u visible objects (Z > %.1f)\n", m_instanceCount, camPos.z);
+        OutputDebugStringA(buf);
     }
+    break;
+    case VK_OEM_COMMA:  // Клавиша '<' (уменьшить дистанцию)
+        m_cullDistance = std::max(10.0f, m_cullDistance - 25.0f);
+        break;
+    case VK_OEM_PERIOD:  // Клавиша '>' (увеличить дистанцию)
+        m_cullDistance = std::min(1000.0f, m_cullDistance + 25.0f);
+        break;
+    case 'B':  // Переключение BVH
+        m_useBVH = !m_useBVH;
+        if (m_useBVH) {
+            OutputDebugStringA("BVH: ON\n");
+        }
+        else {
+            OutputDebugStringA("BVH: OFF (brute-force)\n");
+        }
+        break;
+    }
+}
+
+void D3D12App::GenerateInstances() {
+    m_instances.clear();
+
+    const int gridX = 20;
+    const int gridY = 5;
+    const int gridZ = 20;
+    const float spacingX = 15.0f;
+    const float spacingY = 10.0f;
+    const float spacingZ = 15.0f;
+
+    srand(12345);
+
+    for (int y = 0; y < gridY; y++) {
+        for (int x = 0; x < gridX; x++) {
+            for (int z = 0; z < gridZ; z++) {
+                InstanceData instance;
+
+                float posX = (x - gridX / 2.0f) * spacingX;
+                float posY = (y - gridY / 2.0f) * spacingY;
+                float posZ = (z - gridZ / 2.0f) * spacingZ;
+
+                float angle = ((rand() % 360) / 180.0f) * DirectX::XM_PI;
+                float scale = 0.7f + ((rand() % 60) / 100.0f);
+
+                DirectX::XMMATRIX world = DirectX::XMMatrixScaling(scale, scale, scale) *
+                    DirectX::XMMatrixRotationY(angle) *
+                    DirectX::XMMatrixTranslation(posX, posY, posZ);
+
+                DirectX::XMStoreFloat4x4(&instance.worldMatrix, DirectX::XMMatrixTranspose(world));
+
+                float t = y / (float)(gridY - 1);
+                instance.color = DirectX::XMFLOAT4(0.5f + 0.5f * t, 0.3f + 0.7f * (1 - t), 0.5f, 1.0f);
+
+                m_instances.push_back(instance);
+            }
+        }
+    }
+
+    m_instanceCount = (uint32_t)m_instances.size();
+    m_visibleInstances = m_instances;
+}
+
+void D3D12App::CreateInstanceBuffer() {
+    if (m_instances.empty()) {
+        OutputDebugStringA("No instances to create buffer\n");
+        return;
+    }
+
+    // Создаём буфер на ВСЕ инстансы (видимые будут обновляться)
+    const UINT bufferSize = sizeof(InstanceData) * std::max(1u, (UINT)m_instances.size());
+
+    D3D12_HEAP_PROPERTIES heapProps = {};
+    heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
+    heapProps.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    heapProps.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+    heapProps.CreationNodeMask = 1;
+    heapProps.VisibleNodeMask = 1;
+
+    D3D12_RESOURCE_DESC bufferDesc = {};
+    bufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bufferDesc.Alignment = 0;
+    bufferDesc.Width = bufferSize;
+    bufferDesc.Height = 1;
+    bufferDesc.DepthOrArraySize = 1;
+    bufferDesc.MipLevels = 1;
+    bufferDesc.Format = DXGI_FORMAT_UNKNOWN;
+    bufferDesc.SampleDesc.Count = 1;
+    bufferDesc.SampleDesc.Quality = 0;
+    bufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    bufferDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+    ThrowIfFailed(m_device->CreateCommittedResource(
+        &heapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &bufferDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ,
+        nullptr,
+        IID_PPV_ARGS(&m_instanceBuffer)
+    ), "Create instance buffer");
+
+    void* data;
+    D3D12_RANGE readRange = { 0, 0 };
+    ThrowIfFailed(m_instanceBuffer->Map(0, &readRange, &data), "Map instance buffer");
+    memcpy(data, m_instances.data(), bufferSize);
+    m_instanceBuffer->Unmap(0, nullptr);
+
+    m_instanceBufferView.BufferLocation = m_instanceBuffer->GetGPUVirtualAddress();
+    m_instanceBufferView.StrideInBytes = sizeof(InstanceData);
+    m_instanceBufferView.SizeInBytes = bufferSize;
+
+    OutputDebugStringA("Instance buffer created\n");
+
+
+    InstanceData* instances = (InstanceData*)data;
+    for (int i = 0; i < std::min(3, (int)m_instances.size()); i++) {
+        char buf[256];
+        sprintf_s(buf, "Buffer Instance[%d]: pos=(%.1f, %.1f, %.1f)\n", i,
+            instances[i].worldMatrix._41,
+            instances[i].worldMatrix._42,
+            instances[i].worldMatrix._43);
+        OutputDebugStringA(buf);
+    }
+
+    m_instanceBuffer->Unmap(0, nullptr);
 }
 
 void D3D12App::ResetCamera() {
@@ -1206,6 +1418,185 @@ void D3D12App::LoadDisplacementMap() {
 
     OutputDebugStringA("Displacement map loaded\n");
 }
+
+// Domain Shader
+static const char* tessDS = R"(
+    struct HS_CONSTANT_OUTPUT {
+        float edges[3]  : SV_TessFactor;
+        float inside    : SV_InsideTessFactor;
+        float tessLevel : TESSLEVEL;  // <-- Добавили это поле
+    };
+    
+    struct HS_OUTPUT {
+        float3 position : POSITION;
+        float3 normal   : NORMAL;
+        float2 texcoord : TEXCOORD;
+        float3 tangent  : TANGENT;
+    };
+    
+    struct DS_OUTPUT {
+        float4 position : SV_POSITION;
+        float3 worldPos : WORLDPOS;
+        float3 normal   : NORMAL;
+        float2 texcoord : TEXCOORD;
+        float3 tangent  : TANGENT;
+        float3 bitangent : BITANGENT;
+        float tessLevel : TESSLEVEL;  // <-- НОВОЕ ПОЛЕ для передачи в PS
+    };
+    
+    cbuffer SceneConstant : register(b0) {
+        float4x4 worldViewProj;
+        float4x4 world;
+        float4 lightPos;
+        float4 lightColor;
+        float4 cameraPos;
+        float4 materialAmbient;
+        float4 materialDiffuse;
+        float4 materialSpecular;
+        float materialShininess;
+        float2 textureScale;
+        float2 textureOffset;
+    }
+    
+    [domain("tri")]
+    DS_OUTPUT main(HS_CONSTANT_OUTPUT input, 
+                   const OutputPatch<HS_OUTPUT, 3> patch,
+                   float3 barycentric : SV_DomainLocation) {
+        DS_OUTPUT output;
+        
+        float3 position = patch[0].position * barycentric.x + 
+                          patch[1].position * barycentric.y + 
+                          patch[2].position * barycentric.z;
+        
+        float3 normal = normalize(patch[0].normal * barycentric.x + 
+                                 patch[1].normal * barycentric.y + 
+                                 patch[2].normal * barycentric.z);
+        
+        float2 texcoord = patch[0].texcoord * barycentric.x + 
+                          patch[1].texcoord * barycentric.y + 
+                          patch[2].texcoord * barycentric.z;
+        
+        float3 tangent = normalize(patch[0].tangent * barycentric.x + 
+                                  patch[1].tangent * barycentric.y + 
+                                  patch[2].tangent * barycentric.z);
+        
+        output.position = mul(float4(position, 1.0), worldViewProj);
+        output.worldPos = mul(float4(position, 1.0), world).xyz;
+        output.normal = normalize(mul(float4(normal, 0.0), world).xyz);
+        output.texcoord = texcoord;
+        output.tangent = normalize(mul(float4(tangent, 0.0), world).xyz);
+        output.bitangent = cross(output.normal, output.tangent);
+        
+        // ПЕРЕДАЁМ УРОВЕНЬ ТЕССЕЛЯЦИИ В PS
+        output.tessLevel = input.tessLevel;  // <-- НОВАЯ СТРОКА
+        
+        return output;
+    }
+)";
+
+// Pixel Shader
+static const char* geometryPS = R"(
+    struct PS_INPUT {
+        float4 position : SV_POSITION;
+        float3 worldPos : WORLDPOS;
+        float3 normal   : NORMAL;
+        float2 texcoord : TEXCOORD;
+        float3 tangent  : TANGENT;
+        float3 bitangent : BITANGENT;
+        float tessLevel : TESSLEVEL;
+    };
+    
+    struct PS_OUTPUT {
+        float4 albedo   : SV_Target0;
+        float4 worldPos : SV_Target1;
+        float4 normal   : SV_Target2;
+    };
+
+    cbuffer TessellationParams : register(b1) {
+        float4x4 viewMatrix;
+        float4x4 projMatrix;
+        float4 cameraPos;
+        float minTessDist;
+        float maxTessDist;
+        float minTessLevel;
+        float maxTessLevel;
+        int showVisualization;
+        float padding;
+        int useNormalMap;       // Флаг использования карты нормалей
+        float normalStrength;    // Сила normal mapping (обычно 1.0)
+    }
+    
+    Texture2D diffuseTexture : register(t0);
+    Texture2D normalMap      : register(t1);  // <-- КАРТА НОРМАЛЕЙ
+    Texture2D displacementMap : register(t2);
+    SamplerState textureSampler : register(s0);
+    
+    float3 TessLevelToColor(float tessLevel) {
+        float t = saturate(tessLevel / 64.0);
+        float3 color;
+        if (t < 0.2) {
+            color = lerp(float3(0, 0, 0.5), float3(0, 0.8, 1), t / 0.2);
+        } else if (t < 0.4) {
+            color = lerp(float3(0, 0.8, 1), float3(0, 1, 0), (t - 0.2) / 0.2);
+        } else if (t < 0.6) {
+            color = lerp(float3(0, 1, 0), float3(1, 1, 0), (t - 0.4) / 0.2);
+        } else if (t < 0.8) {
+            color = lerp(float3(1, 1, 0), float3(1, 0.5, 0), (t - 0.6) / 0.2);
+        } else {
+            color = lerp(float3(1, 0.5, 0), float3(1, 0, 0), (t - 0.8) / 0.2);
+        }
+        return color;
+    }
+    
+    PS_OUTPUT main(PS_INPUT input) {
+        PS_OUTPUT output;
+        
+        // Сэмплируем диффузную текстуру
+        float4 texColor = diffuseTexture.Sample(textureSampler, input.texcoord);
+        
+        // ===== NORMAL MAPPING =====
+        float3 worldNormal;
+        
+        if (useNormalMap) {
+            // Сэмплируем карту нормалей
+            float3 sampledNormal = normalMap.Sample(textureSampler, input.texcoord).rgb;
+            
+            // Преобразуем из [0,1] в [-1,1]
+            sampledNormal = sampledNormal * 2.0 - 1.0;
+            
+            // Применяем силу normal mapping
+            sampledNormal.xy *= normalStrength;
+            sampledNormal = normalize(sampledNormal);
+            
+            // Строим TBN матрицу
+            float3 N = normalize(input.normal);
+            float3 T = normalize(input.tangent);
+            float3 B = normalize(input.bitangent);
+            
+            // Преобразуем нормаль из tangent space в world space
+            float3x3 TBN = float3x3(T, B, N);
+            worldNormal = normalize(mul(sampledNormal, TBN));
+        } else {
+            // Используем обычную нормаль
+            worldNormal = normalize(input.normal);
+        }
+        
+        // ===== ВЫБОР ЦВЕТА =====
+        float3 finalColor;
+        if (showVisualization) {
+            finalColor = TessLevelToColor(input.tessLevel);
+        } else {
+            finalColor = texColor.rgb;
+        }
+        
+        output.albedo = float4(finalColor, 1.0);
+        output.worldPos = float4(input.worldPos, 1.0);
+        // Кодируем нормаль в [0,1] для GBuffer
+        output.normal = float4(worldNormal * 0.5 + 0.5, 1.0);
+        
+        return output;
+    }
+)";
 
 void D3D12App::CreateTessellationPipeline() {
     OutputDebugStringA("\n=== Creating Tessellation Pipeline ===\n");
@@ -1382,7 +1773,7 @@ void D3D12App::CreateTessellationPipeline() {
         return output;
     }
     
-HS_CONSTANT_OUTPUT PatchConstantFunc(InputPatch<HS_INPUT, 3> patch, uint patchID : SV_PrimitiveID) {
+    HS_CONSTANT_OUTPUT PatchConstantFunc(InputPatch<HS_INPUT, 3> patch, uint patchID : SV_PrimitiveID) {
     HS_CONSTANT_OUTPUT output;
     
     // Вычисляем центр патча в world space
@@ -1423,80 +1814,6 @@ HS_CONSTANT_OUTPUT PatchConstantFunc(InputPatch<HS_INPUT, 3> patch, uint patchID
     }
     OutputDebugStringA("HS compiled OK\n");
 
-    // Domain Shader
-    static const char* tessDS = R"(
-    struct HS_CONSTANT_OUTPUT {
-        float edges[3]  : SV_TessFactor;
-        float inside    : SV_InsideTessFactor;
-        float tessLevel : TESSLEVEL;  // <-- Добавили это поле
-    };
-    
-    struct HS_OUTPUT {
-        float3 position : POSITION;
-        float3 normal   : NORMAL;
-        float2 texcoord : TEXCOORD;
-        float3 tangent  : TANGENT;
-    };
-    
-    struct DS_OUTPUT {
-        float4 position : SV_POSITION;
-        float3 worldPos : WORLDPOS;
-        float3 normal   : NORMAL;
-        float2 texcoord : TEXCOORD;
-        float3 tangent  : TANGENT;
-        float3 bitangent : BITANGENT;
-        float tessLevel : TESSLEVEL;  // <-- НОВОЕ ПОЛЕ для передачи в PS
-    };
-    
-    cbuffer SceneConstant : register(b0) {
-        float4x4 worldViewProj;
-        float4x4 world;
-        float4 lightPos;
-        float4 lightColor;
-        float4 cameraPos;
-        float4 materialAmbient;
-        float4 materialDiffuse;
-        float4 materialSpecular;
-        float materialShininess;
-        float2 textureScale;
-        float2 textureOffset;
-    }
-    
-    [domain("tri")]
-    DS_OUTPUT main(HS_CONSTANT_OUTPUT input, 
-                   const OutputPatch<HS_OUTPUT, 3> patch,
-                   float3 barycentric : SV_DomainLocation) {
-        DS_OUTPUT output;
-        
-        float3 position = patch[0].position * barycentric.x + 
-                          patch[1].position * barycentric.y + 
-                          patch[2].position * barycentric.z;
-        
-        float3 normal = normalize(patch[0].normal * barycentric.x + 
-                                 patch[1].normal * barycentric.y + 
-                                 patch[2].normal * barycentric.z);
-        
-        float2 texcoord = patch[0].texcoord * barycentric.x + 
-                          patch[1].texcoord * barycentric.y + 
-                          patch[2].texcoord * barycentric.z;
-        
-        float3 tangent = normalize(patch[0].tangent * barycentric.x + 
-                                  patch[1].tangent * barycentric.y + 
-                                  patch[2].tangent * barycentric.z);
-        
-        output.position = mul(float4(position, 1.0), worldViewProj);
-        output.worldPos = mul(float4(position, 1.0), world).xyz;
-        output.normal = normalize(mul(float4(normal, 0.0), world).xyz);
-        output.texcoord = texcoord;
-        output.tangent = normalize(mul(float4(tangent, 0.0), world).xyz);
-        output.bitangent = cross(output.normal, output.tangent);
-        
-        // ПЕРЕДАЁМ УРОВЕНЬ ТЕССЕЛЯЦИИ В PS
-        output.tessLevel = input.tessLevel;  // <-- НОВАЯ СТРОКА
-        
-        return output;
-    }
-)";
 
     hr = D3DCompile(tessDS, strlen(tessDS), nullptr, nullptr, nullptr,
         "main", "ds_5_0", compileFlags, 0, &ds, &error);
@@ -1506,109 +1823,6 @@ HS_CONSTANT_OUTPUT PatchConstantFunc(InputPatch<HS_INPUT, 3> patch, uint patchID
     }
     OutputDebugStringA("DS compiled OK\n");
 
-    // Pixel Shader
-    static const char* geometryPS = R"(
-    struct PS_INPUT {
-        float4 position : SV_POSITION;
-        float3 worldPos : WORLDPOS;
-        float3 normal   : NORMAL;
-        float2 texcoord : TEXCOORD;
-        float3 tangent  : TANGENT;
-        float3 bitangent : BITANGENT;
-        float tessLevel : TESSLEVEL;
-    };
-    
-    struct PS_OUTPUT {
-        float4 albedo   : SV_Target0;
-        float4 worldPos : SV_Target1;
-        float4 normal   : SV_Target2;
-    };
-
-    cbuffer TessellationParams : register(b1) {
-        float4x4 viewMatrix;
-        float4x4 projMatrix;
-        float4 cameraPos;
-        float minTessDist;
-        float maxTessDist;
-        float minTessLevel;
-        float maxTessLevel;
-        int showVisualization;
-        float padding;
-        int useNormalMap;       // Флаг использования карты нормалей
-        float normalStrength;    // Сила normal mapping (обычно 1.0)
-    }
-    
-    Texture2D diffuseTexture : register(t0);
-    Texture2D normalMap      : register(t1);  // <-- КАРТА НОРМАЛЕЙ
-    Texture2D displacementMap : register(t2);
-    SamplerState textureSampler : register(s0);
-    
-    float3 TessLevelToColor(float tessLevel) {
-        float t = saturate(tessLevel / 64.0);
-        float3 color;
-        if (t < 0.2) {
-            color = lerp(float3(0, 0, 0.5), float3(0, 0.8, 1), t / 0.2);
-        } else if (t < 0.4) {
-            color = lerp(float3(0, 0.8, 1), float3(0, 1, 0), (t - 0.2) / 0.2);
-        } else if (t < 0.6) {
-            color = lerp(float3(0, 1, 0), float3(1, 1, 0), (t - 0.4) / 0.2);
-        } else if (t < 0.8) {
-            color = lerp(float3(1, 1, 0), float3(1, 0.5, 0), (t - 0.6) / 0.2);
-        } else {
-            color = lerp(float3(1, 0.5, 0), float3(1, 0, 0), (t - 0.8) / 0.2);
-        }
-        return color;
-    }
-    
-    PS_OUTPUT main(PS_INPUT input) {
-        PS_OUTPUT output;
-        
-        // Сэмплируем диффузную текстуру
-        float4 texColor = diffuseTexture.Sample(textureSampler, input.texcoord);
-        
-        // ===== NORMAL MAPPING =====
-        float3 worldNormal;
-        
-        if (useNormalMap) {
-            // Сэмплируем карту нормалей
-            float3 sampledNormal = normalMap.Sample(textureSampler, input.texcoord).rgb;
-            
-            // Преобразуем из [0,1] в [-1,1]
-            sampledNormal = sampledNormal * 2.0 - 1.0;
-            
-            // Применяем силу normal mapping
-            sampledNormal.xy *= normalStrength;
-            sampledNormal = normalize(sampledNormal);
-            
-            // Строим TBN матрицу
-            float3 N = normalize(input.normal);
-            float3 T = normalize(input.tangent);
-            float3 B = normalize(input.bitangent);
-            
-            // Преобразуем нормаль из tangent space в world space
-            float3x3 TBN = float3x3(T, B, N);
-            worldNormal = normalize(mul(sampledNormal, TBN));
-        } else {
-            // Используем обычную нормаль
-            worldNormal = normalize(input.normal);
-        }
-        
-        // ===== ВЫБОР ЦВЕТА =====
-        float3 finalColor;
-        if (showVisualization) {
-            finalColor = TessLevelToColor(input.tessLevel);
-        } else {
-            finalColor = texColor.rgb;
-        }
-        
-        output.albedo = float4(finalColor, 1.0);
-        output.worldPos = float4(input.worldPos, 1.0);
-        // Кодируем нормаль в [0,1] для GBuffer
-        output.normal = float4(worldNormal * 0.5 + 0.5, 1.0);
-        
-        return output;
-    }
-)";
 
     hr = D3DCompile(geometryPS, strlen(geometryPS), nullptr, nullptr, nullptr,
         "main", "ps_5_0", compileFlags, 0, &ps, &error);
@@ -1755,4 +1969,804 @@ HS_CONSTANT_OUTPUT PatchConstantFunc(InputPatch<HS_INPUT, 3> patch, uint patchID
     OutputDebugStringA(buf);
 
     OutputDebugStringA("=== Tessellation Pipeline Complete ===\n\n");
+}
+
+void D3D12App::CreateInstancedTessellationPipeline() {
+    OutputDebugStringA("\n=== Creating Instanced Tessellation Pipeline ===\n");
+
+    // ===== Root Signature (такая же как для обычной тесселяции) =====
+    D3D12_ROOT_PARAMETER rootParams[3];
+    ZeroMemory(rootParams, sizeof(rootParams));
+
+    rootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    rootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    rootParams[0].Descriptor.ShaderRegister = 0;
+    rootParams[0].Descriptor.RegisterSpace = 0;
+
+    rootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    rootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    rootParams[1].Descriptor.ShaderRegister = 1;
+    rootParams[1].Descriptor.RegisterSpace = 0;
+
+    D3D12_DESCRIPTOR_RANGE descRanges[3];
+    ZeroMemory(descRanges, sizeof(descRanges));
+    descRanges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    descRanges[0].NumDescriptors = 1;
+    descRanges[0].BaseShaderRegister = 0;
+    descRanges[0].RegisterSpace = 0;
+    descRanges[0].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    descRanges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    descRanges[1].NumDescriptors = 1;
+    descRanges[1].BaseShaderRegister = 1;
+    descRanges[1].RegisterSpace = 0;
+    descRanges[1].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    descRanges[2].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    descRanges[2].NumDescriptors = 1;
+    descRanges[2].BaseShaderRegister = 2;
+    descRanges[2].RegisterSpace = 0;
+    descRanges[2].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    rootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    rootParams[2].DescriptorTable.NumDescriptorRanges = 3;
+    rootParams[2].DescriptorTable.pDescriptorRanges = descRanges;
+
+    D3D12_STATIC_SAMPLER_DESC sampler = {};
+    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler.MaxAnisotropy = 16;
+    sampler.ShaderRegister = 0;
+    sampler.RegisterSpace = 0;
+    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_ROOT_SIGNATURE_DESC rootSigDesc = {};
+    rootSigDesc.NumParameters = 3;
+    rootSigDesc.pParameters = rootParams;
+    rootSigDesc.NumStaticSamplers = 1;
+    rootSigDesc.pStaticSamplers = &sampler;
+    rootSigDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+    ComPtr<ID3DBlob> signature;
+    ComPtr<ID3DBlob> error;
+
+    HRESULT hr = D3D12SerializeRootSignature(&rootSigDesc, D3D_ROOT_SIGNATURE_VERSION_1, &signature, &error);
+    if (FAILED(hr)) {
+        if (error) OutputDebugStringA((char*)error->GetBufferPointer());
+        ThrowIfFailed(hr, "Serialize instanced root signature");
+    }
+
+    hr = m_device->CreateRootSignature(0, signature->GetBufferPointer(), signature->GetBufferSize(),
+        IID_PPV_ARGS(&m_instancedTessRootSig));
+    ThrowIfFailed(hr, "Create instanced root signature");
+    OutputDebugStringA("Instanced root signature OK\n");
+
+    // ===== Компиляция шейдеров =====
+    UINT compileFlags = 0;
+#ifdef _DEBUG
+    compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+#endif
+
+    ComPtr<ID3DBlob> vs, hs, ds, ps;
+
+    // Vertex Shader с инстансингом
+    static const char* instancedVS = R"(
+        struct VSInput {
+            float3 position : POSITION;
+            float3 normal   : NORMAL;
+            float2 texcoord : TEXCOORD;
+            float3 tangent  : TANGENT;
+        };
+        
+        struct InstanceInput {
+            float4x4 worldMatrix : WORLDMATRIX;
+            float4 color         : INSTANCECOLOR;
+        };
+        
+        struct VSOutput {
+            float3 position : POSITION;
+            float3 normal   : NORMAL;
+            float2 texcoord : TEXCOORD;
+            float3 tangent  : TANGENT;
+        };
+        
+        VSOutput main(VSInput input, InstanceInput instance) {
+            VSOutput output;
+            float4 worldPos = mul(float4(input.position, 1.0), instance.worldMatrix);
+            output.position = worldPos.xyz;
+            output.normal = normalize(mul(float4(input.normal, 0.0), instance.worldMatrix).xyz);
+            output.tangent = normalize(mul(float4(input.tangent, 0.0), instance.worldMatrix).xyz);
+            output.texcoord = input.texcoord;
+            return output;
+        }
+    )";
+
+    hr = D3DCompile(instancedVS, strlen(instancedVS), nullptr, nullptr, nullptr,
+        "main", "vs_5_0", compileFlags, 0, &vs, &error);
+    if (FAILED(hr)) {
+        if (error) OutputDebugStringA((char*)error->GetBufferPointer());
+        ThrowIfFailed(hr, "Compile instanced VS");
+    }
+    OutputDebugStringA("Instanced VS compiled OK\n");
+
+    // Hull Shader
+    static const char* tessHS = R"(
+        struct HS_INPUT {
+            float3 position : POSITION;
+            float3 normal   : NORMAL;
+            float2 texcoord : TEXCOORD;
+            float3 tangent  : TANGENT;
+        };
+        struct HS_CONSTANT_OUTPUT {
+            float edges[3]  : SV_TessFactor;
+            float inside    : SV_InsideTessFactor;
+            float tessLevel : TESSLEVEL;
+        };
+        struct HS_OUTPUT {
+            float3 position : POSITION;
+            float3 normal   : NORMAL;
+            float2 texcoord : TEXCOORD;
+            float3 tangent  : TANGENT;
+        };
+        cbuffer TessellationParams : register(b1) {
+            float4x4 viewMatrix;
+            float4x4 projMatrix;
+            float4 cameraPos;
+            float minTessDist;
+            float maxTessDist;
+            float minTessLevel;
+            float maxTessLevel;
+        }
+        [domain("tri")]
+        [partitioning("integer")]
+        [outputtopology("triangle_cw")]
+        [outputcontrolpoints(3)]
+        [patchconstantfunc("PatchConstantFunc")]
+        HS_OUTPUT main(InputPatch<HS_INPUT, 3> patch, uint id : SV_OutputControlPointID) {
+            HS_OUTPUT output;
+            output.position = patch[id].position;
+            output.normal = patch[id].normal;
+            output.texcoord = patch[id].texcoord;
+            output.tangent = patch[id].tangent;
+            return output;
+        }
+        HS_CONSTANT_OUTPUT PatchConstantFunc(InputPatch<HS_INPUT, 3> patch, uint patchID : SV_PrimitiveID) {
+            HS_CONSTANT_OUTPUT output;
+            float3 center = (patch[0].position + patch[1].position + patch[2].position) / 3.0;
+            float3 toCamera = cameraPos.xyz - center;
+            float distance = length(toCamera);
+            float normalizedDist = saturate((distance - minTessDist) / (maxTessDist - minTessDist));
+            float tessLevel = lerp(maxTessLevel, minTessLevel, normalizedDist);
+            tessLevel = max(1.0, tessLevel);
+            output.edges[0] = tessLevel;
+            output.edges[1] = tessLevel;
+            output.edges[2] = tessLevel;
+            output.inside = tessLevel;
+            output.tessLevel = tessLevel;
+            return output;
+        }
+    )";
+
+    hr = D3DCompile(tessHS, strlen(tessHS), nullptr, nullptr, nullptr,
+        "main", "hs_5_0", compileFlags, 0, &hs, &error);
+    if (FAILED(hr)) {
+        if (error) OutputDebugStringA((char*)error->GetBufferPointer());
+        ThrowIfFailed(hr, "Compile instanced HS");
+    }
+    OutputDebugStringA("HS compiled OK\n");
+
+    // Domain Shader
+    static const char* tessDS = R"(
+        struct HS_CONSTANT_OUTPUT {
+            float edges[3]  : SV_TessFactor;
+            float inside    : SV_InsideTessFactor;
+            float tessLevel : TESSLEVEL;
+        };
+        struct HS_OUTPUT {
+            float3 position : POSITION;
+            float3 normal   : NORMAL;
+            float2 texcoord : TEXCOORD;
+            float3 tangent  : TANGENT;
+        };
+        struct DS_OUTPUT {
+            float4 position : SV_POSITION;
+            float3 worldPos : WORLDPOS;
+            float3 normal   : NORMAL;
+            float2 texcoord : TEXCOORD;
+            float3 tangent  : TANGENT;
+            float3 bitangent : BITANGENT;
+            float tessLevel : TESSLEVEL;
+        };
+        cbuffer SceneConstant : register(b0) {
+            float4x4 worldViewProj;
+            float4x4 world;
+            float4 lightPos;
+            float4 lightColor;
+            float4 cameraPos;
+            float4 materialAmbient;
+            float4 materialDiffuse;
+            float4 materialSpecular;
+            float materialShininess;
+            float2 textureScale;
+            float2 textureOffset;
+        }
+        [domain("tri")]
+        DS_OUTPUT main(HS_CONSTANT_OUTPUT input, 
+                       const OutputPatch<HS_OUTPUT, 3> patch,
+                       float3 barycentric : SV_DomainLocation) {
+            DS_OUTPUT output;
+            float3 position = patch[0].position * barycentric.x + patch[1].position * barycentric.y + patch[2].position * barycentric.z;
+            float3 normal = normalize(patch[0].normal * barycentric.x + patch[1].normal * barycentric.y + patch[2].normal * barycentric.z);
+            float2 texcoord = patch[0].texcoord * barycentric.x + patch[1].texcoord * barycentric.y + patch[2].texcoord * barycentric.z;
+            float3 tangent = normalize(patch[0].tangent * barycentric.x + patch[1].tangent * barycentric.y + patch[2].tangent * barycentric.z);
+            output.position = mul(float4(position, 1.0), worldViewProj);
+            output.worldPos = mul(float4(position, 1.0), world).xyz;
+            output.normal = normalize(mul(float4(normal, 0.0), world).xyz);
+            output.texcoord = texcoord;
+            output.tangent = normalize(mul(float4(tangent, 0.0), world).xyz);
+            output.bitangent = cross(output.normal, output.tangent);
+            output.tessLevel = input.tessLevel;
+            return output;
+        }
+    )";
+
+    hr = D3DCompile(tessDS, strlen(tessDS), nullptr, nullptr, nullptr,
+        "main", "ds_5_0", compileFlags, 0, &ds, &error);
+    if (FAILED(hr)) {
+        if (error) OutputDebugStringA((char*)error->GetBufferPointer());
+        ThrowIfFailed(hr, "Compile instanced DS");
+    }
+    OutputDebugStringA("DS compiled OK\n");
+
+    // Pixel Shader для инстансинга (с поддержкой переключения визуализации)
+    static const char* geometryPS = R"(
+        struct PS_INPUT {
+            float4 position : SV_POSITION;
+            float3 worldPos : WORLDPOS;
+            float3 normal   : NORMAL;
+            float2 texcoord : TEXCOORD;
+            float3 tangent  : TANGENT;
+            float3 bitangent : BITANGENT;
+            float tessLevel : TESSLEVEL;
+        };
+        struct PS_OUTPUT {
+            float4 albedo   : SV_Target0;
+            float4 worldPos : SV_Target1;
+            float4 normal   : SV_Target2;
+        };
+
+        cbuffer TessellationParams : register(b1) {
+            float4x4 viewMatrix;
+            float4x4 projMatrix;
+            float4 cameraPos;
+            float minTessDist;
+            float maxTessDist;
+            float minTessLevel;
+            float maxTessLevel;
+            int showVisualization;
+            float padding;
+            int useNormalMap;
+            float normalStrength;
+            float padding2[2];
+        }
+        
+        Texture2D diffuseTexture : register(t0);
+        Texture2D normalMap      : register(t1);
+        Texture2D displacementMap : register(t2);
+        SamplerState textureSampler : register(s0);
+        
+        float3 TessLevelToColor(float tessLevel) {
+            float t = saturate(tessLevel / 64.0);
+            float3 color;
+            if (t < 0.2) {
+                color = lerp(float3(0, 0, 0.5), float3(0, 0.8, 1), t / 0.2);
+            } else if (t < 0.4) {
+                color = lerp(float3(0, 0.8, 1), float3(0, 1, 0), (t - 0.2) / 0.2);
+            } else if (t < 0.6) {
+                color = lerp(float3(0, 1, 0), float3(1, 1, 0), (t - 0.4) / 0.2);
+            } else if (t < 0.8) {
+                color = lerp(float3(1, 1, 0), float3(1, 0.5, 0), (t - 0.6) / 0.2);
+            } else {
+                color = lerp(float3(1, 0.5, 0), float3(1, 0, 0), (t - 0.8) / 0.2);
+            }
+            return color;
+        }
+        
+        PS_OUTPUT main(PS_INPUT input) {
+            PS_OUTPUT output;
+            
+            // Сэмплируем диффузную текстуру
+            float4 texColor = diffuseTexture.Sample(textureSampler, input.texcoord);
+            
+            // Normal mapping
+            float3 worldNormal;
+            if (useNormalMap) {
+                float3 sampledNormal = normalMap.Sample(textureSampler, input.texcoord).rgb;
+                sampledNormal = sampledNormal * 2.0 - 1.0;
+                sampledNormal.xy *= normalStrength;
+                sampledNormal = normalize(sampledNormal);
+                
+                float3 N = normalize(input.normal);
+                float3 T = normalize(input.tangent);
+                float3 B = normalize(input.bitangent);
+                float3x3 TBN = float3x3(T, B, N);
+                worldNormal = normalize(mul(sampledNormal, TBN));
+            } else {
+                worldNormal = normalize(input.normal);
+            }
+            
+            // Выбор цвета: визуализация или текстура (управляется кнопкой V)
+            float3 finalColor;
+            if (showVisualization) {
+                finalColor = TessLevelToColor(input.tessLevel);
+            } else {
+                finalColor = texColor.rgb;
+            }
+            
+            output.albedo = float4(finalColor, 1.0);
+            output.worldPos = float4(input.worldPos, 1.0);
+            output.normal = float4(worldNormal * 0.5 + 0.5, 1.0);
+            
+            return output;
+        }
+    )";
+
+    hr = D3DCompile(geometryPS, strlen(geometryPS), nullptr, nullptr, nullptr,
+        "main", "ps_5_0", compileFlags, 0, &ps, &error);
+    if (FAILED(hr)) {
+        if (error) OutputDebugStringA((char*)error->GetBufferPointer());
+        ThrowIfFailed(hr, "Compile instanced PS");
+    }
+    OutputDebugStringA("PS compiled OK\n");
+
+    // ===== Создание PSO с Input Layout для инстансинга =====
+    OutputDebugStringA("Creating instanced PSO...\n");
+
+    // ВАЖНО: 4 per-vertex элемента + 5 per-instance элементов = Input Layout для инстансинга
+    D3D12_INPUT_ELEMENT_DESC inputDesc[] = {
+        // Per-vertex data (slot 0)
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TANGENT",  0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 32, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        // Per-instance data (slot 1) - 4x4 matrix = 4 rows of float4
+        { "WORLDMATRIX", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 0, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "WORLDMATRIX", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 16, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "WORLDMATRIX", 2, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 32, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "WORLDMATRIX", 3, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 48, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "INSTANCECOLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 64, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 }
+    };
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
+    psoDesc.InputLayout = { inputDesc, _countof(inputDesc) };
+    psoDesc.pRootSignature = m_instancedTessRootSig.Get();
+    psoDesc.VS = { vs->GetBufferPointer(), vs->GetBufferSize() };
+    psoDesc.HS = { hs->GetBufferPointer(), hs->GetBufferSize() };
+    psoDesc.DS = { ds->GetBufferPointer(), ds->GetBufferSize() };
+    psoDesc.PS = { ps->GetBufferPointer(), ps->GetBufferSize() };
+
+    psoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
+    psoDesc.RasterizerState.FrontCounterClockwise = FALSE;
+    psoDesc.RasterizerState.DepthBias = 0;
+    psoDesc.RasterizerState.DepthBiasClamp = 0.0f;
+    psoDesc.RasterizerState.SlopeScaledDepthBias = 0.0f;
+    psoDesc.RasterizerState.DepthClipEnable = TRUE;
+    psoDesc.RasterizerState.MultisampleEnable = FALSE;
+    psoDesc.RasterizerState.AntialiasedLineEnable = FALSE;
+    psoDesc.RasterizerState.ForcedSampleCount = 0;
+    psoDesc.RasterizerState.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
+
+    psoDesc.DepthStencilState.DepthEnable = TRUE;
+    psoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    psoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
+    psoDesc.DepthStencilState.StencilEnable = FALSE;
+
+    psoDesc.BlendState.AlphaToCoverageEnable = FALSE;
+    psoDesc.BlendState.IndependentBlendEnable = TRUE;
+    for (int i = 0; i < 3; i++) {
+        psoDesc.BlendState.RenderTarget[i].BlendEnable = FALSE;
+        psoDesc.BlendState.RenderTarget[i].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    }
+
+    psoDesc.SampleMask = UINT_MAX;
+    psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_PATCH;  // Тесселяция
+    psoDesc.NumRenderTargets = 3;
+    psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+    psoDesc.RTVFormats[1] = DXGI_FORMAT_R32G32B32A32_FLOAT;
+    psoDesc.RTVFormats[2] = DXGI_FORMAT_R32G32B32A32_FLOAT;
+    psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+    psoDesc.SampleDesc.Count = 1;
+    psoDesc.NodeMask = 1;
+    psoDesc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
+
+    hr = m_device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_instancedTessPSO));
+    if (FAILED(hr)) {
+        char buffer[256];
+        sprintf_s(buffer, "CreateGraphicsPipelineState failed: 0x%08X\n", hr);
+        OutputDebugStringA(buffer);
+        ThrowIfFailed(hr, "Create instanced tessellation PSO");
+    }
+
+    OutputDebugStringA("=== Instanced Tessellation Pipeline Complete ===\n");
+}
+
+void D3D12App::ComputeFrustumPlanes() {
+    XMMATRIX view = m_camera.GetViewMatrix();
+    XMMATRIX proj = m_camera.GetProjectionMatrix();
+    XMMATRIX viewProj = XMMatrixMultiply(view, proj);
+
+    // Транспонируем для извлечения плоскостей
+    XMMATRIX vp = XMMatrixTranspose(viewProj);
+
+    // Извлекаем строки как XMVECTOR
+    XMVECTOR row0 = vp.r[0];  // X
+    XMVECTOR row1 = vp.r[1];  // Y
+    XMVECTOR row2 = vp.r[2];  // Z
+    XMVECTOR row3 = vp.r[3];  // W
+
+    // Left plane: row3 + row0
+    XMVECTOR left = XMVectorAdd(row3, row0);
+    XMStoreFloat4(&m_frustumPlanes[0], XMPlaneNormalize(left));
+
+    // Right plane: row3 - row0
+    XMVECTOR right = XMVectorSubtract(row3, row0);
+    XMStoreFloat4(&m_frustumPlanes[1], XMPlaneNormalize(right));
+
+    // Bottom plane: row3 + row1
+    XMVECTOR bottom = XMVectorAdd(row3, row1);
+    XMStoreFloat4(&m_frustumPlanes[2], XMPlaneNormalize(bottom));
+
+    // Top plane: row3 - row1
+    XMVECTOR top = XMVectorSubtract(row3, row1);
+    XMStoreFloat4(&m_frustumPlanes[3], XMPlaneNormalize(top));
+
+    // Near plane: для LH системы
+    XMVECTOR nearPlane = XMVectorAdd(row3, row2);
+    XMStoreFloat4(&m_frustumPlanes[4], XMPlaneNormalize(nearPlane));
+
+    // Far plane: row3 - row2
+    XMVECTOR farPlane = XMVectorSubtract(row3, row2);
+    XMStoreFloat4(&m_frustumPlanes[5], XMPlaneNormalize(farPlane));
+
+    // Отладка: выводим плоскости каждые 120 кадров
+    static int debugCounter = 0;
+    if (debugCounter++ % 120 == 0) {
+        char buf[512];
+        sprintf_s(buf, "Frustum planes:\n"
+            "  Left:  (%.2f, %.2f, %.2f, %.2f)\n"
+            "  Right: (%.2f, %.2f, %.2f, %.2f)\n"
+            "  Bottom:(%.2f, %.2f, %.2f, %.2f)\n"
+            "  Top:   (%.2f, %.2f, %.2f, %.2f)\n"
+            "  Near:  (%.2f, %.2f, %.2f, %.2f)\n"
+            "  Far:   (%.2f, %.2f, %.2f, %.2f)\n",
+            m_frustumPlanes[0].x, m_frustumPlanes[0].y, m_frustumPlanes[0].z, m_frustumPlanes[0].w,
+            m_frustumPlanes[1].x, m_frustumPlanes[1].y, m_frustumPlanes[1].z, m_frustumPlanes[1].w,
+            m_frustumPlanes[2].x, m_frustumPlanes[2].y, m_frustumPlanes[2].z, m_frustumPlanes[2].w,
+            m_frustumPlanes[3].x, m_frustumPlanes[3].y, m_frustumPlanes[3].z, m_frustumPlanes[3].w,
+            m_frustumPlanes[4].x, m_frustumPlanes[4].y, m_frustumPlanes[4].z, m_frustumPlanes[4].w,
+            m_frustumPlanes[5].x, m_frustumPlanes[5].y, m_frustumPlanes[5].z, m_frustumPlanes[5].w);
+        OutputDebugStringA(buf);
+    }
+}
+
+bool D3D12App::IsInFrustum(const InstanceData& instance) {
+    const float* raw = (const float*)&instance.worldMatrix;
+    float px = raw[3];
+    float py = raw[7];
+    float pz = raw[11];
+    float radius = 5.0f;
+
+    for (int i = 0; i < 6; i++) {
+        if (i == 4) continue;
+
+        float d =
+            m_frustumPlanes[i].x * px +
+            m_frustumPlanes[i].y * py +
+            m_frustumPlanes[i].z * pz +
+            m_frustumPlanes[i].w;
+
+        if (d < -radius) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool D3D12App::IsInstanceVisible(const InstanceData& instance) {
+    // Позиция объекта из world матрицы
+    float posX = instance.worldMatrix._41;
+    float posY = instance.worldMatrix._42;
+    float posZ = instance.worldMatrix._43;
+
+    // Радиус ограничивающей сферы
+    float radius = 5.0f;
+
+    // Проверяем все 6 плоскостей
+    for (int i = 0; i < 6; i++) {
+        float distance =
+            m_frustumPlanes[i].x * posX +
+            m_frustumPlanes[i].y * posY +
+            m_frustumPlanes[i].z * posZ +
+            m_frustumPlanes[i].w;
+
+        // Для отладки: выводим расстояния для первых 5 объектов
+        static int debugCount = 0;
+        if (debugCount < 5 && i == 0) {
+            char buf[128];
+            sprintf_s(buf, "Obj(%.1f,%.1f,%.1f) dist[%d]=%.2f (r=%.1f)\n",
+                posX, posY, posZ, i, distance, radius);
+            OutputDebugStringA(buf);
+            debugCount++;
+        }
+
+        // Если расстояние отрицательное и больше радиуса - объект за плоскостью
+        if (distance < -radius) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+AABB D3D12App::ComputeInstanceAABB(const InstanceData& instance) {
+    const float* raw = (const float*)&instance.worldMatrix;
+
+    // Извлекаем позицию из матрицы
+    DirectX::XMFLOAT3 position(raw[3], raw[7], raw[11]);
+
+    // Извлекаем масштаб (длина строк матрицы)
+    float scaleX = sqrtf(raw[0] * raw[0] + raw[1] * raw[1] + raw[2] * raw[2]);
+    float scaleY = sqrtf(raw[4] * raw[4] + raw[5] * raw[5] + raw[6] * raw[6]);
+    float scaleZ = sqrtf(raw[8] * raw[8] + raw[9] * raw[9] + raw[10] * raw[10]);
+
+    // Приблизительный размер модели (можно настроить)
+    float modelRadius = 5.0f;
+
+    AABB aabb;
+    aabb.min = DirectX::XMFLOAT3(
+        position.x - modelRadius * scaleX,
+        position.y - modelRadius * scaleY,
+        position.z - modelRadius * scaleZ
+    );
+    aabb.max = DirectX::XMFLOAT3(
+        position.x + modelRadius * scaleX,
+        position.y + modelRadius * scaleY,
+        position.z + modelRadius * scaleZ
+    );
+
+    return aabb;
+}
+
+void D3D12App::BuildBVH() {
+    OutputDebugStringA("Building BVH...\n");
+
+    DestroyBVH();
+
+    std::vector<uint32_t> allIndices(m_instances.size());
+    for (uint32_t i = 0; i < m_instances.size(); i++) {
+        allIndices[i] = i;
+    }
+
+    uint32_t maxDepth = 12;
+
+    auto startTime = std::chrono::high_resolution_clock::now();
+    m_bvhRoot = BuildBVHRecursive(allIndices, 0, maxDepth);
+    auto endTime = std::chrono::high_resolution_clock::now();
+
+    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(endTime - startTime).count();
+
+    // Подсчёт узлов
+    std::function<void(BVHNode*, uint32_t&, uint32_t&)> countNodes =
+        [&](BVHNode* node, uint32_t& internal, uint32_t& leaves) {
+        if (!node) return;
+        if (node->isLeaf) leaves++;
+        else internal++;
+        countNodes(node->left, internal, leaves);
+        countNodes(node->right, internal, leaves);
+        };
+
+    uint32_t internalNodes = 0, leafNodes = 0;
+    countNodes(m_bvhRoot, internalNodes, leafNodes);
+
+    char buf[512];
+    sprintf_s(buf, "BVH built: %d internal + %d leaf nodes (total %d) in %.2f ms\n"
+        "  Objects: %zu, MaxDepth: %u\n",
+        internalNodes, leafNodes, internalNodes + leafNodes,
+        duration / 1000.0f, m_instances.size(), maxDepth);
+    OutputDebugStringA(buf);
+}
+
+BVHNode* D3D12App::BuildBVHRecursive(std::vector<uint32_t>& indices, uint32_t depth, uint32_t maxDepth) {
+    BVHNode* node = new BVHNode();
+    node->depth = depth;
+
+    // Вычисляем AABB для всех объектов в этом узле
+    for (uint32_t idx : indices) {
+        AABB aabb = ComputeInstanceAABB(m_instances[idx]);
+        node->bounds.Extend(aabb);
+    }
+
+    // ИЗМЕНЁННЫЕ ПАРАМЕТРЫ:
+    const uint32_t minObjectsPerLeaf = 4;   // Было 16
+    const uint32_t maxObjectsPerLeaf = 8;   // Было 64 - теперь листья меньше
+    const uint32_t maxDepthLimit = 10;      
+
+    if (indices.size() <= maxObjectsPerLeaf || depth >= maxDepthLimit) {
+        node->isLeaf = true;
+        node->instanceIndices = std::move(indices);
+        return node;
+    }
+
+    // Выбираем ось разбиения (самая длинная)
+    DirectX::XMFLOAT3 extent = node->bounds.HalfSize();
+    int splitAxis = 0;  // 0=X, 1=Y, 2=Z
+    if (extent.y > extent.x && extent.y > extent.z) splitAxis = 1;
+    if (extent.z > extent.x && extent.z > extent.y) splitAxis = 2;
+
+    // Сортируем по выбранной оси
+    std::sort(indices.begin(), indices.end(), [&](uint32_t a, uint32_t b) {
+        const float* rawA = (const float*)&m_instances[a].worldMatrix;
+        const float* rawB = (const float*)&m_instances[b].worldMatrix;
+
+        float posA = (splitAxis == 0) ? rawA[3] : (splitAxis == 1) ? rawA[7] : rawA[11];
+        float posB = (splitAxis == 0) ? rawB[3] : (splitAxis == 1) ? rawB[7] : rawB[11];
+
+        return posA < posB;
+        });
+
+    // Разбиваем пополам
+    size_t mid = indices.size() / 2;
+    std::vector<uint32_t> leftIndices(indices.begin(), indices.begin() + mid);
+    std::vector<uint32_t> rightIndices(indices.begin() + mid, indices.end());
+
+    // Рекурсивно строим детей
+    node->left = BuildBVHRecursive(leftIndices, depth + 1, maxDepth);
+    node->right = BuildBVHRecursive(rightIndices, depth + 1, maxDepth);
+
+    return node;
+}
+
+bool D3D12App::IsAABBInFrustum(const AABB& aabb) {
+    // Проверка AABB против фрустума (метод p-vertex)
+    for (int i = 0; i < 6; i++) {
+        if (i == 4) continue;  // Пропускаем near
+
+        // Находим p-vertex (самую дальнюю точку в направлении нормали)
+        DirectX::XMFLOAT3 p;
+        p.x = (m_frustumPlanes[i].x > 0.0f) ? aabb.max.x : aabb.min.x;
+        p.y = (m_frustumPlanes[i].y > 0.0f) ? aabb.max.y : aabb.min.y;
+        p.z = (m_frustumPlanes[i].z > 0.0f) ? aabb.max.z : aabb.min.z;
+
+        float d =
+            m_frustumPlanes[i].x * p.x +
+            m_frustumPlanes[i].y * p.y +
+            m_frustumPlanes[i].z * p.z +
+            m_frustumPlanes[i].w;
+
+        // Если даже p-vertex за плоскостью - весь AABB за плоскостью
+        if (d < 0.0f) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+void D3D12App::QueryBVH(BVHNode* node, std::vector<uint32_t>& visibleIndices) {
+    if (!node) return;
+
+    if (!IsAABBInFrustum(node->bounds)) {
+        return;
+    }
+
+    if (node->isLeaf) {
+        for (uint32_t idx : node->instanceIndices) {
+            if (IsInFrustum(m_instances[idx])) {
+                visibleIndices.push_back(idx);
+            }
+        }
+    }
+    else {
+        QueryBVH(node->left, visibleIndices);
+        QueryBVH(node->right, visibleIndices);
+    }
+}
+
+void D3D12App::DestroyBVH() {
+    if (!m_bvhRoot) return;
+
+    // Итеративное удаление дерева без рекурсии
+    std::vector<BVHNode*> nodesToDelete;
+    std::vector<BVHNode*> stack;
+
+    stack.push_back(m_bvhRoot);
+
+    // Собираем все узлы в обратном порядке (post-order)
+    while (!stack.empty()) {
+        BVHNode* node = stack.back();
+        stack.pop_back();
+        nodesToDelete.push_back(node);
+
+        if (!node->isLeaf) {
+            if (node->right) stack.push_back(node->right);
+            if (node->left) stack.push_back(node->left);
+        }
+    }
+
+    // Удаляем в обратном порядке (дети перед родителями)
+    for (auto it = nodesToDelete.rbegin(); it != nodesToDelete.rend(); ++it) {
+        delete* it;
+    }
+
+    m_bvhRoot = nullptr;
+    OutputDebugStringA("BVH destroyed\n");
+}
+
+void D3D12App::UpdateVisibleInstances() {
+    if (!m_useFrustumCulling) {
+        m_instanceCount = (uint32_t)m_instances.size();
+        return;
+    }
+
+    // Вычисляем плоскости фрустума
+    ComputeFrustumPlanes();
+
+    m_visibleInstances.clear();
+
+    if (m_useBVH && m_bvhRoot) {
+        // ИСПОЛЬЗУЕМ BVH для быстрого поиска
+        std::vector<uint32_t> visibleIndices;
+        visibleIndices.reserve(m_instances.size());
+
+        QueryBVH(m_bvhRoot, visibleIndices);
+
+        // Собираем инстансы по индексам
+        for (uint32_t idx : visibleIndices) {
+            m_visibleInstances.push_back(m_instances[idx]);
+        }
+    }
+    else {
+        // Запасной вариант: полный перебор
+        for (const auto& instance : m_instances) {
+            if (IsInFrustum(instance)) {
+                m_visibleInstances.push_back(instance);
+            }
+        }
+    }
+
+    // Защита от полного отсечения
+    if (m_visibleInstances.empty() && !m_instances.empty()) {
+        OutputDebugStringA("WARNING: All objects culled! Using all.\n");
+        m_visibleInstances = m_instances;
+    }
+
+    m_instanceCount = (uint32_t)m_visibleInstances.size();
+
+    // Обновляем instance buffer
+    if (m_instanceBuffer && !m_visibleInstances.empty()) {
+        void* data;
+        D3D12_RANGE readRange = { 0, 0 };
+        HRESULT hr = m_instanceBuffer->Map(0, &readRange, &data);
+        if (SUCCEEDED(hr) && data) {
+            memcpy(data, m_visibleInstances.data(),
+                m_visibleInstances.size() * sizeof(InstanceData));
+            m_instanceBuffer->Unmap(0, nullptr);
+        }
+    }
+
+    static int logCounter = 0;
+    if (logCounter++ % 60 == 0) {
+        char buf[256];
+        sprintf_s(buf, "BVH Cull: vis=%zu tot=%zu | cam=(%.0f,%.0f,%.0f)\n",
+            m_visibleInstances.size(), m_instances.size(),
+            m_camera.GetPosition().x,
+            m_camera.GetPosition().y,
+            m_camera.GetPosition().z);
+        OutputDebugStringA(buf);
+    }
 }

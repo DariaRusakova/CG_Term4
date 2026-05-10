@@ -9,6 +9,13 @@
 #include "../Model/Material.h"
 #include "../Model/Vertex.h"
 
+
+struct InstanceData {
+    DirectX::XMFLOAT4X4 worldMatrix;
+    DirectX::XMFLOAT4 color;
+};
+
+
 class RenderingSystem {
 public:
     struct RenderData {
@@ -26,6 +33,12 @@ public:
         ID3D12PipelineState* tessellationPSO = nullptr;
         ID3D12RootSignature* tessellationRootSig = nullptr;
         D3D12_GPU_VIRTUAL_ADDRESS tessCBVAddress = 0;
+        // Инстансинг
+        bool useInstancing = false;
+        ID3D12Resource* instanceBuffer = nullptr;
+        uint32_t instanceCount = 0;
+        ID3D12PipelineState* instancedPSO = nullptr;           // PSO для инстансинга
+        ID3D12RootSignature* instancedRootSig = nullptr;       // Root Signature для инстансинга
     };
 
     RenderingSystem();

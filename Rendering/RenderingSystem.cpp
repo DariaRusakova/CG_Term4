@@ -4,6 +4,7 @@
 #include <d3dcompiler.h>
 #include <stdexcept>
 #include <directxmath.h>
+#include "../Model/Vertex.h"  // Для InstanceData и Vertex
 
 using namespace DirectX;
 using Microsoft::WRL::ComPtr;
@@ -406,10 +407,13 @@ void RenderingSystem::Render(
     ID3D12PipelineState* activePSO = nullptr;
     ID3D12RootSignature* activeRootSig = nullptr;
 
-    if (renderData->useTessellation && renderData->tessellationPSO && renderData->tessellationRootSig) {
+    if (renderData->useInstancing && renderData->instancedPSO && renderData->instancedRootSig) {
+        activePSO = renderData->instancedPSO;
+        activeRootSig = renderData->instancedRootSig;
+    }
+    else if (renderData->useTessellation && renderData->tessellationPSO && renderData->tessellationRootSig) {
         activePSO = renderData->tessellationPSO;
         activeRootSig = renderData->tessellationRootSig;
-        //OutputDebugStringA("Using tessellation pipeline\n");
     }
     else {
         activePSO = geometryPSO;
@@ -451,14 +455,27 @@ void RenderingSystem::Render(
     D3D12_VERTEX_BUFFER_VIEW vbv = {};
     vbv.BufferLocation = renderData->vertexBuffer->GetGPUVirtualAddress();
     vbv.StrideInBytes = sizeof(Vertex);
-    vbv.SizeInBytes = sizeof(Vertex) * renderData->indexCount * 3; // Максимальный размер
+    vbv.SizeInBytes = sizeof(Vertex) * renderData->indexCount * 3;
 
     D3D12_INDEX_BUFFER_VIEW ibv = {};
     ibv.BufferLocation = renderData->indexBuffer->GetGPUVirtualAddress();
     ibv.SizeInBytes = renderData->indexCount * sizeof(uint32_t);
     ibv.Format = DXGI_FORMAT_R32_UINT;
 
-    cmdList->IASetVertexBuffers(0, 1, &vbv);
+    // Инстансинг: два буфера или один
+    if (renderData->useInstancing && renderData->instanceBuffer && renderData->instanceCount > 0) {
+        D3D12_VERTEX_BUFFER_VIEW ibv2 = {};
+        ibv2.BufferLocation = renderData->instanceBuffer->GetGPUVirtualAddress();
+        ibv2.StrideInBytes = sizeof(InstanceData);
+        ibv2.SizeInBytes = sizeof(InstanceData) * renderData->instanceCount;
+
+        D3D12_VERTEX_BUFFER_VIEW views[2] = { vbv, ibv2 };
+        cmdList->IASetVertexBuffers(0, 2, views);
+    }
+    else {
+        cmdList->IASetVertexBuffers(0, 1, &vbv);
+    }
+
     cmdList->IASetIndexBuffer(&ibv);
 
     // ВАЖНО: Устанавливаем примитивную топологию
@@ -496,9 +513,10 @@ void RenderingSystem::Render(
                 }
 
                 // Отрисовываем группу
+                UINT instanceCount = (renderData->useInstancing && renderData->instanceCount > 0) ? renderData->instanceCount : 1;
                 cmdList->DrawIndexedInstanced(
                     renderData->materialIndexCount[i],
-                    1,
+                    instanceCount,
                     renderData->materialStartIndex[i],
                     0,
                     0
@@ -513,7 +531,12 @@ void RenderingSystem::Render(
             cmdList->SetGraphicsRootDescriptorTable(2, srvGpuStart);
         }
 
-        cmdList->DrawIndexedInstanced(renderData->indexCount, 1, 0, 0, 0);
+        if (renderData->useInstancing && renderData->instanceCount > 0) {
+            cmdList->DrawIndexedInstanced(renderData->indexCount, renderData->instanceCount, 0, 0, 0);
+        }
+        else {
+            cmdList->DrawIndexedInstanced(renderData->indexCount, 1, 0, 0, 0);
+        }
     }
 
     // ============ LIGHTING PASS ============

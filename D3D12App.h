@@ -31,6 +31,66 @@ struct SceneConstantBuffer {
     DirectX::XMFLOAT2 textureOffset;
 };
 
+// Структуры для BVH (AABB-tree)
+
+// Выровненный по осям ограничивающий параллелепипед
+struct AABB {
+    DirectX::XMFLOAT3 min;
+    DirectX::XMFLOAT3 max;
+
+    AABB() : min(FLT_MAX, FLT_MAX, FLT_MAX), max(-FLT_MAX, -FLT_MAX, -FLT_MAX) {}
+
+    // Расширить AABB точкой
+    void Extend(const DirectX::XMFLOAT3& point) {
+        min.x = std::min(min.x, point.x);
+        min.y = std::min(min.y, point.y);
+        min.z = std::min(min.z, point.z);
+        max.x = std::max(max.x, point.x);
+        max.y = std::max(max.y, point.y);
+        max.z = std::max(max.z, point.z);
+    }
+
+    // Расширить другим AABB
+    void Extend(const AABB& other) {
+        min.x = std::min(min.x, other.min.x);
+        min.y = std::min(min.y, other.min.y);
+        min.z = std::min(min.z, other.min.z);
+        max.x = std::max(max.x, other.max.x);
+        max.y = std::max(max.y, other.max.y);
+        max.z = std::max(max.z, other.max.z);
+    }
+
+    // Центр AABB
+    DirectX::XMFLOAT3 Center() const {
+        return DirectX::XMFLOAT3(
+            (min.x + max.x) * 0.5f,
+            (min.y + max.y) * 0.5f,
+            (min.z + max.z) * 0.5f
+        );
+    }
+
+    // Полуразмер (extents)
+    DirectX::XMFLOAT3 HalfSize() const {
+        return DirectX::XMFLOAT3(
+            (max.x - min.x) * 0.5f,
+            (max.y - min.y) * 0.5f,
+            (max.z - min.z) * 0.5f
+        );
+    }
+};
+
+// Узел BVH
+struct BVHNode {
+    AABB bounds;               // Ограничивающий объём узла
+    BVHNode* left = nullptr;   // Левый потомок
+    BVHNode* right = nullptr;  // Правый потомок
+    bool isLeaf = false;       // Лист?
+
+    // Данные листа
+    std::vector<uint32_t> instanceIndices;  // Индексы инстансов в листе
+    uint32_t depth = 0;                     // Глубина узла (для отладки)
+};
+
 // Вспомогательная функция
 inline void ThrowIfFailed(HRESULT hr, const char* errorMsg = "") {
     if (FAILED(hr)) {
@@ -143,6 +203,43 @@ private:
     float m_tessMinLevel = 1.0f;
     float m_tessMaxLevel = 64.0f;
 
+    // Инстансинг
+    std::vector<InstanceData> m_instances;
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_instanceBuffer;
+    D3D12_VERTEX_BUFFER_VIEW m_instanceBufferView = {};
+    uint32_t m_instanceCount = 0;
+    bool m_useInstancing = false;
+
+    // Frustum culling
+    bool m_useFrustumCulling = true;
+    float m_cullDistance = 250.0f;  // Дистанция отсечения
+
+    // Плоскости фрустума (6 плоскостей: left, right, top, bottom, near, far)
+    DirectX::XMFLOAT4 m_frustumPlanes[6];
+
+    // Кэш видимых инстансов
+    std::vector<InstanceData> m_visibleInstances;
+    std::vector<bool> m_instanceVisible;
+    bool IsInFrustum(const InstanceData& instance);
+    // Отдельный PSO для инстансинга с тесселяцией
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_instancedTessPSO;
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> m_instancedTessRootSig;
+
+
+    // BVH дерево
+    BVHNode* m_bvhRoot = nullptr;
+    bool m_useBVH = true;
+
+    // Методы BVH
+    void BuildBVH();
+    BVHNode* BuildBVHRecursive(std::vector<uint32_t>& indices, uint32_t depth, uint32_t maxDepth);
+    AABB ComputeInstanceAABB(const InstanceData& instance);
+    void QueryBVH(BVHNode* node, std::vector<uint32_t>& visibleIndices);
+    bool IsAABBInFrustum(const AABB& aabb);
+    void DestroyBVH();
+
+
+
     // Камера
     Camera m_camera;
     bool m_mousePressed = false;
@@ -183,6 +280,14 @@ private:
     void CreateGeometryPassRootSignature();
     void CreateGeometryPassPipelineState();
     void DebugPrintMaterialMapping();
+
+    void GenerateInstances();
+    void CreateInstanceBuffer();
+    void CreateInstancedTessellationPipeline();
+
+    void ComputeFrustumPlanes();                                    // Вычисление плоскостей фрустума
+    bool IsInstanceVisible(const InstanceData& instance);          // Проверка видимости
+    void UpdateVisibleInstances();                                  // Обновление списка видимых
 
     // ===== Методы синхронизации =====
     void WaitForPreviousFrame();
