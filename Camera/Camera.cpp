@@ -4,11 +4,21 @@
 using namespace DirectX;
 
 Camera::Camera() {
+    m_distance = 15.0f;     // Начальная дистанция
+    m_yaw = 0.0f;
+    m_pitch = 0.2f;
+    m_rotateSpeed = 0.005f;
+    m_zoomSpeed = 0.5f;
+    m_minDistance = 0.1f;   // Минимальное приближение
+    m_maxDistance = 100.0f; // Максимальное отдаление
     Recalculate();
 }
 
 void Camera::Update(float aspectRatio) {
-    m_proj = XMMatrixPerspectiveFovLH(XM_PIDIV4, aspectRatio, 0.1f, 100.0f);
+    // Для очень маленьких моделей можно использовать меньший near plane
+    m_proj = XMMatrixPerspectiveFovLH(XM_PIDIV4, aspectRatio, 0.01f, 1000.0f);
+    // Было: 0.1f, 100.0f
+    // Стало: 0.01f, 1000.0f - более широкий диапазон
     Recalculate();
 }
 
@@ -26,7 +36,7 @@ void Camera::Zoom(float amount) {
 }
 
 void Camera::Reset() {
-    m_distance = 5.0f;
+    m_distance = 15.0f;     // Было 5.0f - увеличьте дистанцию
     m_yaw = 0.0f;
     m_pitch = 0.2f;
     Recalculate();

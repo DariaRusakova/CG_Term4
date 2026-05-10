@@ -34,13 +34,24 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         return 0;
 
     case WM_DESTROY:
+        OutputDebugStringA("WM_DESTROY received\n");
+        if (app) {
+            app->Shutdown();
+        }
         PostQuitMessage(0);
+        return 0;
+
+    case WM_CLOSE:
+        OutputDebugStringA("WM_CLOSE received\n");
+        DestroyWindow(hwnd);
         return 0;
     }
     return DefWindowProc(hwnd, msg, wParam, lParam);
 }
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
+    OutputDebugStringA("WinMain started\n");
+
     WNDCLASSA wc = {};
     wc.lpfnWndProc = WndProc;
     wc.hInstance = hInstance;
@@ -53,18 +64,37 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
         WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 1024, 768,
         nullptr, nullptr, hInstance, &app);
 
-    if (!hwnd) return 1;
+    if (!hwnd) {
+        OutputDebugStringA("Failed to create window\n");
+        return 1;
+    }
+
     ShowWindow(hwnd, nCmdShow);
 
-    if (!app.Initialize(hwnd)) return 1;
+    if (!app.Initialize(hwnd)) {
+        OutputDebugStringA("Failed to initialize app\n");
+        return 1;
+    }
 
     MSG msg = {};
     while (true) {
         while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
-            if (msg.message == WM_QUIT) return 0;
+            if (msg.message == WM_QUIT) {
+                OutputDebugStringA("WM_QUIT received, exiting\n");
+                return 0;
+            }
             TranslateMessage(&msg);
             DispatchMessage(&msg);
         }
-        app.RenderFrame();
+
+        try {
+            app.RenderFrame();
+        }
+        catch (...) {
+            OutputDebugStringA("Exception in main loop\n");
+            break;
+        }
     }
+
+    return 0;
 }

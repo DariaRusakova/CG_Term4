@@ -18,6 +18,7 @@ set(SOURCES
     Rendering/GBuffer.cpp
     Rendering/RenderingSystem.cpp
     Rendering/Light.cpp
+    Shaders/TessellationShaders.cpp 
 )
 
 add_executable(D3D12SponzaRenderer WIN32 ${SOURCES})

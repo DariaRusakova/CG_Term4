@@ -1,38 +1,41 @@
 #pragma once
 #include <d3d12.h>
-#include <d3dcompiler.h>
 #include <wrl/client.h>
-#include <vector>
 #include <memory>
-#include <directxmath.h>
+#include <vector>
+#include <stdexcept>
 #include "GBuffer.h"
 #include "Light.h"
-#include "../Model/Material.h"  // Добавляем включение Material
-#include "Shaders/DeferredLightPass.h"
+#include "../Model/Material.h"
+#include "../Model/Vertex.h"
 
 class RenderingSystem {
 public:
-    // Структура для передачи данных рендеринга
     struct RenderData {
-        ID3D12Resource* vertexBuffer;
-        ID3D12Resource* indexBuffer;
-        UINT indexCount;
-        D3D12_GPU_VIRTUAL_ADDRESS cbvAddress;
-        ID3D12DescriptorHeap* modelSrvHeap;
-        UINT srvDescriptorSize;
-        const uint32_t* materialStartIndex;
-        const uint32_t* materialIndexCount;
-        UINT numMaterials;
-        const Material* materials;  // Используем правильный тип
+        ID3D12Resource* vertexBuffer = nullptr;
+        ID3D12Resource* indexBuffer = nullptr;
+        UINT indexCount = 0;
+        D3D12_GPU_VIRTUAL_ADDRESS cbvAddress = 0;
+        ID3D12DescriptorHeap* modelSrvHeap = nullptr;
+        UINT srvDescriptorSize = 0;
+        const uint32_t* materialStartIndex = nullptr;
+        const uint32_t* materialIndexCount = nullptr;
+        UINT numMaterials = 0;
+        const Material* materials = nullptr;
+        bool useTessellation = false;
+        ID3D12PipelineState* tessellationPSO = nullptr;
+        ID3D12RootSignature* tessellationRootSig = nullptr;
+        D3D12_GPU_VIRTUAL_ADDRESS tessCBVAddress = 0;
     };
 
     RenderingSystem();
     ~RenderingSystem();
 
     void Initialize(ID3D12Device* device, UINT width, UINT height);
-    void Resize(UINT width, UINT height);
 
-    // Обновленный метод Render
+    // Убираем Resize, так как он не реализован
+    // void Resize(ID3D12Device* device, UINT width, UINT height);
+
     void Render(ID3D12GraphicsCommandList* cmdList,
         ID3D12Resource* depthStencil,
         D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle,
@@ -45,33 +48,24 @@ public:
     void ClearLights();
 
 private:
+    std::unique_ptr<GBuffer> m_gbuffer;
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_gbufferRtvHeap;
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_gbufferSrvHeap;
+    std::vector<Light> m_lights;
+
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_lightConstantBuffer;
+    void* m_lightCBData;
+
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_fullscreenVB;
+    D3D12_VERTEX_BUFFER_VIEW m_fullscreenVBView;
+
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_lightingPSO;
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> m_lightingRootSig;
+
+    UINT m_width;
+    UINT m_height;
+
     void CreateLightBuffers(ID3D12Device* device);
     void CreateFullscreenQuad(ID3D12Device* device);
     void CreateLightingPassPipeline(ID3D12Device* device);
-
-    Microsoft::WRL::ComPtr<ID3D12RootSignature> m_lightingRootSig;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_lightingPSO;
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_fullscreenVB;
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_lightConstantBuffer;
-
-    D3D12_VERTEX_BUFFER_VIEW m_fullscreenVBView;
-
-    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_gbufferSrvHeap;
-    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_gbufferRtvHeap;
-
-    std::unique_ptr<GBuffer> m_gbuffer;
-    std::vector<Light> m_lights;
-
-    void* m_lightCBData = nullptr;
-    UINT m_width = 0;
-    UINT m_height = 0;
-
-    struct LightBuffer {
-        DirectX::XMFLOAT4 position_type[16];
-        DirectX::XMFLOAT4 direction[16];
-        DirectX::XMFLOAT4 color_intensity[16];
-        DirectX::XMFLOAT4 range_spotAngle[16];
-        UINT lightCount;
-        float padding[3];
-    };
 };

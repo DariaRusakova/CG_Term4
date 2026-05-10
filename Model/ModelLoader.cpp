@@ -10,6 +10,100 @@
 
 using namespace DirectX;
 
+// Вспомогательная функция для вычисления касательных
+static void CalculateTangents(ModelData& model) {
+    if (model.vertices.empty() || model.indices.empty()) return;
+
+    // Инициализируем касательные и бикасательные нулями
+    for (auto& vertex : model.vertices) {
+        vertex.tangent = XMFLOAT3(0.0f, 0.0f, 0.0f);
+        vertex.bitangent = XMFLOAT3(0.0f, 0.0f, 0.0f);
+    }
+
+    // Обрабатываем каждый треугольник
+    for (size_t i = 0; i < model.indices.size() - 2; i += 3) {
+        uint32_t i0 = model.indices[i];
+        uint32_t i1 = model.indices[i + 1];
+        uint32_t i2 = model.indices[i + 2];
+
+        // Проверка на валидность индексов
+        if (i0 >= model.vertices.size() || i1 >= model.vertices.size() || i2 >= model.vertices.size())
+            continue;
+
+        Vertex& v0 = model.vertices[i0];
+        Vertex& v1 = model.vertices[i1];
+        Vertex& v2 = model.vertices[i2];
+
+        // Вычисляем рёбра треугольника
+        XMFLOAT3 edge1 = {
+            v1.position.x - v0.position.x,
+            v1.position.y - v0.position.y,
+            v1.position.z - v0.position.z
+        };
+        XMFLOAT3 edge2 = {
+            v2.position.x - v0.position.x,
+            v2.position.y - v0.position.y,
+            v2.position.z - v0.position.z
+        };
+
+        // Вычисляем разницу текстурных координат
+        float deltaU1 = v1.texcoord.x - v0.texcoord.x;
+        float deltaV1 = v1.texcoord.y - v0.texcoord.y;
+        float deltaU2 = v2.texcoord.x - v0.texcoord.x;
+        float deltaV2 = v2.texcoord.y - v0.texcoord.y;
+
+        // Вычисляем детерминант
+        float f = 1.0f / (deltaU1 * deltaV2 - deltaU2 * deltaV1);
+
+        // Вычисляем касательную
+        XMFLOAT3 tangent;
+        tangent.x = f * (deltaV2 * edge1.x - deltaV1 * edge2.x);
+        tangent.y = f * (deltaV2 * edge1.y - deltaV1 * edge2.y);
+        tangent.z = f * (deltaV2 * edge1.z - deltaV1 * edge2.z);
+
+        // Аккумулируем касательные для вершин
+        v0.tangent.x += tangent.x;
+        v0.tangent.y += tangent.y;
+        v0.tangent.z += tangent.z;
+
+        v1.tangent.x += tangent.x;
+        v1.tangent.y += tangent.y;
+        v1.tangent.z += tangent.z;
+
+        v2.tangent.x += tangent.x;
+        v2.tangent.y += tangent.y;
+        v2.tangent.z += tangent.z;
+    }
+
+    // Ортогонализируем и нормализуем касательные
+    for (auto& vertex : model.vertices) {
+        // Загружаем векторы в XMVECTOR для математических операций
+        XMVECTOR T = XMLoadFloat3(&vertex.tangent);
+        XMVECTOR N = XMLoadFloat3(&vertex.normal);
+
+        // Ортогонализация Грама-Шмидта
+        XMVECTOR T_perp = XMVector3Normalize(
+            XMVectorSubtract(T, XMVectorMultiply(N, XMVector3Dot(N, T)))
+        );
+
+        // Сохраняем ортогонализированную касательную
+        XMStoreFloat3(&vertex.tangent, T_perp);
+
+        // Вычисляем бикасательную как cross product
+        XMVECTOR B = XMVector3Cross(N, T_perp);
+
+        // Проверяем направление бикасательной
+        XMVECTOR B_check = XMVector3Cross(N, T_perp);
+        if (XMVectorGetX(XMVector3Dot(B_check, B)) < 0.0f) {
+            B = XMVectorNegate(B);
+        }
+
+        XMStoreFloat3(&vertex.bitangent, B);
+    }
+
+    OutputDebugStringA("Tangent space calculated successfully\n");
+}
+
 ModelData ModelLoader::LoadOBJ(const std::string& filename, const std::string& basePath) {
     tinyobj::attrib_t attrib;
     std::vector<tinyobj::shape_t> shapes;
@@ -27,7 +121,9 @@ ModelData ModelLoader::LoadOBJ(const std::string& filename, const std::string& b
     }
 
     ModelData model;
-    const float scale = 0.01f;
+    const float scale = 1.0f;    // Если модель изначально маленькая
+    // const float scale = 10.0f;  // Если нужно увеличить
+    // const float scale = 0.01f;  // Для Sponza (уменьшение)
 
     // Конвертируем материалы tinyobj в наши материалы
     std::map<int, int> materialIdToIndex;
@@ -115,17 +211,23 @@ ModelData ModelLoader::LoadOBJ(const std::string& filename, const std::string& b
 
                 model.vertices.push_back({ XMFLOAT3(px, py, pz),
                                            XMFLOAT3(nx, ny, nz),
-                                           XMFLOAT2(tx, ty) });
-                model.indices.push_back((uint32_t)(model.indices.size()));
+                                           XMFLOAT2(tx, ty),
+                                           XMFLOAT3(0, 0, 0),  // tangent (будет вычислен)
+                                           XMFLOAT3(0, 0, 0) }); // bitangent (будет вычислен)
             }
 
+            // Добавляем индексы
             for (int v = 0; v < 3; v++) {
+                model.indices.push_back(baseIndex + v);
                 materialGroups[materialIndex].push_back(baseIndex + v);
             }
 
             indexOffset += fv;
         }
     }
+
+    // ВАЖНО: Вычисляем tangent space ДО формирования групп материалов
+    CalculateTangents(model);
 
     // Формируем финальные массивы
     for (size_t i = 0; i < model.materials.size(); i++) {

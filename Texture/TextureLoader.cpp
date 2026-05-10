@@ -389,3 +389,114 @@ Texture TextureLoader::CreateDefaultTexture(ID3D12Device* device, ID3D12Graphics
     OutputDebugStringA("Created default white texture\n");
     return texture;
 }
+
+Texture TextureLoader::CreateDisplacementTexture(ID3D12Device* device,
+    ID3D12GraphicsCommandList* commandList,
+    const std::string& filename) {
+    Texture texture;
+
+    if (!FileExists(filename)) {
+        OutputDebugStringA(("Displacement file not found: " + filename + "\n").c_str());
+        return CreateDefaultTexture(device, commandList);
+    }
+
+    int width, height, channels;
+    // Загружаем как 16-битное изображение
+    unsigned short* imageData = stbi_load_16(filename.c_str(), &width, &height, &channels, 1);
+
+    if (!imageData) {
+        OutputDebugStringA(("Failed to load displacement map: " + filename +
+            " - " + stbi_failure_reason() + "\n").c_str());
+        return CreateDefaultTexture(device, commandList);
+    }
+
+    texture.width = width;
+    texture.height = height;
+    texture.format = DXGI_FORMAT_R16_UNORM; // 16-битный формат для плавного смещения
+    texture.filename = filename;
+
+    // Создаем ресурс текстуры
+    D3D12_RESOURCE_DESC texDesc = {};
+    texDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    texDesc.Width = width;
+    texDesc.Height = height;
+    texDesc.DepthOrArraySize = 1;
+    texDesc.MipLevels = 1;
+    texDesc.Format = texture.format;
+    texDesc.SampleDesc.Count = 1;
+    texDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+
+    D3D12_HEAP_PROPERTIES heapProps = {};
+    heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+    heapProps.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    heapProps.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+
+    HRESULT hr = device->CreateCommittedResource(
+        &heapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &texDesc,
+        D3D12_RESOURCE_STATE_COPY_DEST,
+        nullptr,
+        IID_PPV_ARGS(&texture.resource)
+    );
+
+    if (FAILED(hr)) {
+        OutputDebugStringA("Failed to create displacement texture resource\n");
+        stbi_image_free(imageData);
+        return CreateDefaultTexture(device, commandList);
+    }
+
+    // Загружаем данные
+    const UINT64 uploadBufferSize = GetRequiredIntermediateSize(texture.resource.Get(), 0, 1);
+
+    D3D12_HEAP_PROPERTIES uploadHeapProps = {};
+    uploadHeapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
+    uploadHeapProps.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    uploadHeapProps.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+
+    D3D12_RESOURCE_DESC uploadBufferDesc = {};
+    uploadBufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    uploadBufferDesc.Width = uploadBufferSize;
+    uploadBufferDesc.Height = 1;
+    uploadBufferDesc.DepthOrArraySize = 1;
+    uploadBufferDesc.MipLevels = 1;
+    uploadBufferDesc.Format = DXGI_FORMAT_UNKNOWN;
+    uploadBufferDesc.SampleDesc.Count = 1;
+    uploadBufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+    hr = device->CreateCommittedResource(
+        &uploadHeapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &uploadBufferDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ,
+        nullptr,
+        IID_PPV_ARGS(&texture.uploadHeap)
+    );
+
+    if (SUCCEEDED(hr)) {
+        D3D12_SUBRESOURCE_DATA textureData = {};
+        textureData.pData = imageData;
+        textureData.RowPitch = width * sizeof(unsigned short); // 2 байта на пиксель
+        textureData.SlicePitch = textureData.RowPitch * height;
+
+        UpdateSubresources(commandList, texture.resource.Get(), texture.uploadHeap.Get(),
+            0, 0, 1, &textureData);
+
+        D3D12_RESOURCE_BARRIER barrier = {};
+        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barrier.Transition.pResource = texture.resource.Get();
+        barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+        barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        commandList->ResourceBarrier(1, &barrier);
+    }
+
+    stbi_image_free(imageData);
+
+    char buffer[256];
+    sprintf_s(buffer, "Loaded displacement texture: %s (%dx%d) [16-bit]\n",
+        filename.c_str(), width, height);
+    OutputDebugStringA(buffer);
+
+    return texture;
+}
