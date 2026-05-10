@@ -709,8 +709,8 @@ void D3D12App::DebugPrintMaterialMapping() {
 // ==============================================
 
 void D3D12App::UpdateConstantBuffer(uint32_t bufferIndex) {
-    m_rotationAngle += 0.005f;
-    if (m_rotationAngle > XM_2PI) m_rotationAngle -= XM_2PI;
+    //m_rotationAngle += 0.005f;
+    //if (m_rotationAngle > XM_2PI) m_rotationAngle -= XM_2PI;
     m_textureAnimTime += 0.016f;
 
     // Обновляем камеру
@@ -737,10 +737,14 @@ void D3D12App::UpdateConstantBuffer(uint32_t bufferIndex) {
     cb.materialShininess = 16.0f;
 
     // Анимация текстур
-    cb.textureScale = XMFLOAT2(2.0f, 2.0f);
-    float offsetX = sinf(m_textureAnimTime * 0.5f) * 0.1f;
-    float offsetY = cosf(m_textureAnimTime * 0.3f) * 0.1f;
-    cb.textureOffset = XMFLOAT2(offsetX, offsetY);
+    //cb.textureScale = XMFLOAT2(2.0f, 2.0f);
+    //float offsetX = sinf(m_textureAnimTime * 0.5f) * 0.1f;
+    //float offsetY = cosf(m_textureAnimTime * 0.3f) * 0.1f;
+    //cb.textureOffset = XMFLOAT2(offsetX, offsetY);
+  
+    // Установить значения по умолчанию:
+    cb.textureScale = XMFLOAT2(1.0f, 1.0f);
+    cb.textureOffset = XMFLOAT2(0.0f, 0.0f);
 
     memcpy(m_cbvDataBegin[bufferIndex], &cb, sizeof(SceneConstantBuffer));
 }
