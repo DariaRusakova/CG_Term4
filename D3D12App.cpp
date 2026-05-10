@@ -500,6 +500,16 @@ bool D3D12App::Initialize(HWND hwnd) {
         // Загружаем displacement map (ДОБАВЛЕНО)
         LoadDisplacementMap();
 
+        // Инициализируем систему частиц
+        m_particleSystem = std::make_unique<ParticleSystem>();
+        m_particleSystem->Initialize(m_device.Get(), 10000);
+        m_particleSystem->SetEmitRate(500.0f);
+        m_particleSystem->SetParticleLifetime(3.0f);
+        m_particleSystem->SetParticleColor(XMFLOAT4(1.0f, 0.8f, 0.3f, 1.0f));
+        m_particleSystem->SetParticleSize(1.0f);
+        m_particleSystem->SetParticleSpeed(3.0f);
+
+
         // Создаем геометрические буферы из загруженных данных
         CreateBuffersFromData();
         CreateConstantBuffers();
@@ -899,6 +909,12 @@ void D3D12App::RenderFrame() {
         UpdateConstantBuffer(m_frameIndex);
         UpdateTessellationConstantBuffer(m_frameIndex); // Обновляем CB тесселяции
 
+
+        // Обновление частиц (если включены)
+        if (m_particlesEnabled) {
+            UpdateParticles(0.016f);  // 60 FPS
+        }
+
         // Обновляем видимые инстансы (frustum culling)
         if (m_useInstancing) {
             UpdateVisibleInstances();
@@ -1026,6 +1042,16 @@ void D3D12App::RenderFrame() {
             m_geometryPSO.Get(),
             &renderData
         );
+
+        // Рендеринг частиц поверх сцены
+        if (m_particlesEnabled && m_particleSystem) {
+            // Передаём матрицы камеры
+            m_particleSystem->SetViewProjection(
+                m_camera.GetViewMatrix(),
+                m_camera.GetProjectionMatrix()
+            );
+            m_particleSystem->Render(m_commandList.Get(), rtvHandle, dsvHandle);
+        }
 
         // Барьер для Present
         barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
@@ -1281,6 +1307,10 @@ void D3D12App::OnKeyDown(WPARAM wParam) {
         else {
             OutputDebugStringA("BVH: OFF (brute-force)\n");
         }
+        break;
+    case 'P':  // Переключение системы частиц
+        m_particlesEnabled = !m_particlesEnabled;
+        OutputDebugStringA(m_particlesEnabled ? "Particles: ON\n" : "Particles: OFF\n");
         break;
     }
 }
@@ -2769,4 +2799,14 @@ void D3D12App::UpdateVisibleInstances() {
             m_camera.GetPosition().z);
         OutputDebugStringA(buf);
     }
+}
+
+void D3D12App::UpdateParticles(float deltaTime) {
+    if (!m_particleSystem || !m_particlesEnabled) return;
+
+    // Эмиттер перед камерой
+    XMFLOAT3 camPos = m_camera.GetPosition();
+    m_emitterPosition = XMFLOAT3(camPos.x, camPos.y + 2.0f, camPos.z - 3.0f);
+
+    m_particleSystem->Update(deltaTime, m_emitterPosition);
 }

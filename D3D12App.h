@@ -15,6 +15,8 @@
 #include "Model/Vertex.h"
 #include "Texture/TextureLoader.h"
 #include "Rendering/RenderingSystem.h"
+#include "Particles/ParticleSystem.h"
+
 
 // Структура для сцены (константный буфер b0)
 struct SceneConstantBuffer {
@@ -238,7 +240,10 @@ private:
     bool IsAABBInFrustum(const AABB& aabb);
     void DestroyBVH();
 
-
+    // Система частиц
+    std::unique_ptr<ParticleSystem> m_particleSystem;
+    DirectX::XMFLOAT3 m_emitterPosition = { 0.0f, 10.0f, 0.0f };  // Позиция эмиттера
+    bool m_particlesEnabled = false;
 
     // Камера
     Camera m_camera;
@@ -293,6 +298,8 @@ private:
     void WaitForPreviousFrame();
     void SignalFrame();
     void WaitForGpu();
+
+    void UpdateParticles(float deltaTime);
 
     // ===== Вспомогательные методы =====
     static UINT AlignSizeForCB(UINT size) {

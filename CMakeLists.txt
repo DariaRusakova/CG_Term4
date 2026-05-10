@@ -19,6 +19,7 @@ set(SOURCES
     Rendering/RenderingSystem.cpp
     Rendering/Light.cpp
     Shaders/TessellationShaders.cpp 
+    Particles/ParticleSystem.cpp
 )
 
 add_executable(D3D12SponzaRenderer WIN32 ${SOURCES})
