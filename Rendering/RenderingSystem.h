@@ -44,10 +44,25 @@ public:
     void AddLight(const Light& light);
     void ClearLights();
 
+    void SetGlobalIntensity(float intensity) {
+        if (!m_lights.empty()) {
+            m_globalIntensity = intensity;
+            // Обновляем интенсивность всех источников
+            for (auto& light : m_lights) {
+                light.intensity = m_originalIntensities[&light - m_lights.data()] * intensity;
+            }
+        }
+    }
+
 private:
     void CreateLightBuffers(ID3D12Device* device);
     void CreateFullscreenQuad(ID3D12Device* device);
     void CreateLightingPassPipeline(ID3D12Device* device);
+
+    void* m_lightCBData = nullptr;
+
+    float m_globalIntensity = 1.0f;
+    std::vector<float> m_originalIntensities;
 
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_lightingRootSig;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_lightingPSO;
@@ -62,11 +77,19 @@ private:
     std::unique_ptr<GBuffer> m_gbuffer;
     std::vector<Light> m_lights;
 
-    void* m_lightCBData = nullptr;
     UINT m_width = 0;
     UINT m_height = 0;
 
     struct LightBuffer {
+        DirectX::XMFLOAT4 position_type[16];
+        DirectX::XMFLOAT4 direction[16];
+        DirectX::XMFLOAT4 color_intensity[16];
+        DirectX::XMFLOAT4 range_spotAngle[16];
+        UINT lightCount;
+        float padding[3];
+    };
+
+    struct LightBufferGPU {
         DirectX::XMFLOAT4 position_type[16];
         DirectX::XMFLOAT4 direction[16];
         DirectX::XMFLOAT4 color_intensity[16];

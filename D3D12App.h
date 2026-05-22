@@ -136,9 +136,13 @@ private:
     bool m_mousePressed = false;
     POINT m_lastMousePos = {};
 
+    float m_lightIntensity = 1.0f;  // Текущая интенсивность
+    float m_lightIntensityStep = 0.1f;  // Шаг изменения
+
     // Animation
     float m_textureAnimTime = 0.0f;
     float m_rotationAngle = 0.0f;
+
 
     D3D12_VIEWPORT m_viewport;
     D3D12_RECT m_scissorRect;

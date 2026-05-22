@@ -25,109 +25,38 @@ namespace Shaders {
         Texture2D<float4> WorldPosTex : register(t1);
         Texture2D<float4> NormalTex : register(t2);
 
-        struct LightData {
-            float4 position_type;
-            float4 direction;
-            float4 color_intensity;
-            float4 range_spotAngle;
-        };
-
-        cbuffer LightCB : register(b0) {
-            LightData lights[16];
+        cbuffer LightBuffer : register(b0) {
+            float4 lights_pos_type[16];
+            float4 lights_dir[16];
+            float4 lights_col_int[16];
+            float4 lights_range_angle[16];
             uint lightCount;
-            float3 padding;
-        }
-
-        float3 CalculatePointLight(float3 worldPos, float3 normal, float3 viewDir, LightData light) {
-            float3 lightVec = light.position_type.xyz - worldPos;
-            float distance = length(lightVec);
-            float3 lightDir = normalize(lightVec);
-            
-            float attenuation = saturate(1.0 - distance * distance / (light.range_spotAngle.x * light.range_spotAngle.x));
-            attenuation *= attenuation;
-            
-            float NdotL = saturate(dot(normal, lightDir));
-            float3 diffuse = light.color_intensity.rgb * NdotL * attenuation;
-            
-            float3 halfVec = normalize(lightDir + viewDir);
-            float specular = pow(saturate(dot(normal, halfVec)), 64.0);
-            float3 specularColor = light.color_intensity.rgb * specular * attenuation * 0.5;
-            
-            return (diffuse + specularColor) * light.color_intensity.a;
-        }
-
-        float3 CalculateDirectionalLight(float3 normal, float3 viewDir, LightData light) {
-            float3 lightDir = normalize(-light.direction.xyz);
-            
-            float NdotL = saturate(dot(normal, lightDir));
-            float3 diffuse = light.color_intensity.rgb * NdotL;
-            
-            float3 halfVec = normalize(lightDir + viewDir);
-            float specular = pow(saturate(dot(normal, halfVec)), 64.0);
-            float3 specularColor = light.color_intensity.rgb * specular * 0.3;
-            
-            return (diffuse + specularColor) * light.color_intensity.a;
-        }
-
-        float3 CalculateSpotLight(float3 worldPos, float3 normal, float3 viewDir, LightData light) {
-            float3 lightVec = light.position_type.xyz - worldPos;
-            float distance = length(lightVec);
-            float3 lightDir = normalize(lightVec);
-            
-            float attenuation = saturate(1.0 - distance * distance / (light.range_spotAngle.x * light.range_spotAngle.x));
-            attenuation *= attenuation;
-            
-            float spotFactor = dot(-lightDir, normalize(light.direction.xyz));
-            float spotCutoff = cos(light.range_spotAngle.y);
-            float spotAtten = smoothstep(spotCutoff, spotCutoff + 0.1, spotFactor);
-            
-            float NdotL = saturate(dot(normal, lightDir));
-            float3 diffuse = light.color_intensity.rgb * NdotL * attenuation * spotAtten;
-            
-            float3 halfVec = normalize(lightDir + viewDir);
-            float specular = pow(saturate(dot(normal, halfVec)), 64.0);
-            float3 specularColor = light.color_intensity.rgb * specular * attenuation * spotAtten * 0.5;
-            
-            return (diffuse + specularColor) * light.color_intensity.a;
         }
 
         float4 main(float4 position : SV_POSITION) : SV_TARGET {
             int3 texPos = int3(position.xy, 0);
-            
+    
             float4 albedo = AlbedoTex.Load(texPos);
             float4 worldPos = WorldPosTex.Load(texPos);
             float4 normalData = NormalTex.Load(texPos);
-            
+    
             float3 N = normalize(normalData.xyz * 2.0 - 1.0);
-            
-            float3 V = normalize(float3(0.0, 5.0, -10.0) - worldPos.xyz);
-            
-            float3 ambient = albedo.rgb * float3(0.1, 0.09, 0.07);
-            float3 finalColor = ambient;
-            
+            float3 finalColor = albedo.rgb * 0.1;
+    
             for (uint i = 0; i < lightCount; i++) {
-                uint type = (uint)lights[i].position_type.w;
-                
-                if (type == 0) {
-                    finalColor += CalculatePointLight(worldPos.xyz, N, V, lights[i]);
-                }
-                else if (type == 1) {
-                    finalColor += CalculateDirectionalLight(N, V, lights[i]);
-                }
-                else if (type == 2) {
-                    finalColor += CalculateSpotLight(worldPos.xyz, N, V, lights[i]);
-                }
+                float3 lightPos = lights_pos_type[i].xyz;
+                float3 lightColor = lights_col_int[i].rgb;
+                float intensity = lights_col_int[i].a;
+                uint type = (uint)lights_pos_type[i].w;
+        
+                float3 L = normalize(lightPos - worldPos.xyz);
+                float NdotL = saturate(dot(N, L));
+        
+                float globalIntensity = 0.01f;
+                finalColor += albedo.rgb * lightColor * NdotL * intensity * globalIntensity;
             }
-            
-            finalColor = finalColor * albedo.rgb;
-            
-            float3 fillLight = float3(0.05, 0.04, 0.03) * albedo.rgb * saturate(-N.y);
-            finalColor += fillLight;
-            
-            finalColor = finalColor / (finalColor + float3(1.0, 1.0, 1.0));
-            finalColor = pow(finalColor, float3(1.0/2.2, 1.0/2.2, 1.0/2.2));
-            
+    
             return float4(finalColor, 1.0);
         }
-    )";
+        )";
 }

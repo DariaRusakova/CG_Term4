@@ -62,7 +62,7 @@ void RenderingSystem::Initialize(ID3D12Device* device, UINT width, UINT height) 
     sunLight.type = LightType::Directional;
     sunLight.direction = XMFLOAT3(0.3f, -0.8f, 0.5f);  // Направление солнца
     sunLight.color = XMFLOAT4(1.0f, 0.9f, 0.7f, 1.0f);  // Теплый солнечный цвет
-    sunLight.intensity = 1.8f;
+    sunLight.intensity = 0.8f;
     AddLight(sunLight);
 
     // Точечный свет в центре атриума (теплый)
@@ -70,7 +70,7 @@ void RenderingSystem::Initialize(ID3D12Device* device, UINT width, UINT height) 
     centerLight.type = LightType::Point;
     centerLight.position = XMFLOAT3(0.0f, 4.0f, 0.0f);
     centerLight.color = XMFLOAT4(1.0f, 0.85f, 0.6f, 1.0f);
-    centerLight.intensity = 40.0f;
+    centerLight.intensity = 15.0f;
     centerLight.range = 15.0f;
     AddLight(centerLight);
 
@@ -79,7 +79,7 @@ void RenderingSystem::Initialize(ID3D12Device* device, UINT width, UINT height) 
     leftColumn.type = LightType::Point;
     leftColumn.position = XMFLOAT3(-6.0f, 3.0f, -3.0f);
     leftColumn.color = XMFLOAT4(0.9f, 0.8f, 0.7f, 1.0f);
-    leftColumn.intensity = 30.0f;
+    leftColumn.intensity = 10.0f;
     leftColumn.range = 10.0f;
     AddLight(leftColumn);
 
@@ -87,7 +87,7 @@ void RenderingSystem::Initialize(ID3D12Device* device, UINT width, UINT height) 
     rightColumn.type = LightType::Point;
     rightColumn.position = XMFLOAT3(6.0f, 3.0f, 3.0f);
     rightColumn.color = XMFLOAT4(0.9f, 0.8f, 0.7f, 1.0f);
-    rightColumn.intensity = 30.0f;
+    rightColumn.intensity = 10.0f;
     rightColumn.range = 10.0f;
     AddLight(rightColumn);
 
@@ -96,7 +96,7 @@ void RenderingSystem::Initialize(ID3D12Device* device, UINT width, UINT height) 
     backWall.type = LightType::Point;
     backWall.position = XMFLOAT3(0.0f, 5.0f, -8.0f);
     backWall.color = XMFLOAT4(1.0f, 0.85f, 0.7f, 1.0f);
-    backWall.intensity = 25.0f;
+    backWall.intensity = 8.0f;
     backWall.range = 12.0f;
     AddLight(backWall);
 
@@ -105,7 +105,7 @@ void RenderingSystem::Initialize(ID3D12Device* device, UINT width, UINT height) 
     frontLight.type = LightType::Point;
     frontLight.position = XMFLOAT3(0.0f, 3.0f, 8.0f);
     frontLight.color = XMFLOAT4(0.8f, 0.9f, 1.0f, 1.0f);  // Немного холоднее для контраста
-    frontLight.intensity = 35.0f;
+    frontLight.intensity = 12.0f;
     frontLight.range = 14.0f;
     AddLight(frontLight);
 
@@ -115,10 +115,37 @@ void RenderingSystem::Initialize(ID3D12Device* device, UINT width, UINT height) 
     skylight.position = XMFLOAT3(0.0f, 10.0f, 0.0f);
     skylight.direction = XMFLOAT3(0.0f, -1.0f, 0.1f);
     skylight.color = XMFLOAT4(1.0f, 0.95f, 0.85f, 1.0f);
-    skylight.intensity = 80.0f;
+    skylight.intensity = 25.0f;
     skylight.range = 25.0f;
     skylight.spotAngle = 40.0f * XM_PI / 180.0f;
     AddLight(skylight);
+
+
+    m_originalIntensities.clear();
+    for (const auto& light : m_lights) {
+        m_originalIntensities.push_back(light.intensity);
+    }
+    m_globalIntensity = 0.1f;
+
+
+    D3D12_HEAP_PROPERTIES heapProps = {};
+    heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
+
+    D3D12_RESOURCE_DESC bufferDesc = {};
+    bufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bufferDesc.Width = sizeof(LightBufferGPU);
+    bufferDesc.Height = 1;
+    bufferDesc.DepthOrArraySize = 1;
+    bufferDesc.MipLevels = 1;
+    bufferDesc.Format = DXGI_FORMAT_UNKNOWN;
+    bufferDesc.SampleDesc.Count = 1;
+    bufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+    device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &bufferDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_lightConstantBuffer));
+
+    D3D12_RANGE readRange = { 0, 0 };
+    m_lightConstantBuffer->Map(0, &readRange, &m_lightCBData);
 }
 
 void RenderingSystem::Resize(UINT width, UINT height) {
@@ -392,12 +419,13 @@ void RenderingSystem::CreateLightingPassPipeline(ID3D12Device* device) {
     // Исправленный rootParams[1] без Flags
     D3D12_ROOT_PARAMETER rootParams[2] = {};
 
+    // Param 0: Descriptor table для GBuffer
     rootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     rootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     rootParams[0].DescriptorTable.NumDescriptorRanges = 1;
     rootParams[0].DescriptorTable.pDescriptorRanges = &descRange;
 
-    // Исправлено: убрано Flags, т.к. это не член D3D12_ROOT_DESCRIPTOR
+    // Param 1: Constant buffer для света
     rootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     rootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     rootParams[1].Descriptor.ShaderRegister = 0;
@@ -524,6 +552,21 @@ void RenderingSystem::Render(ID3D12GraphicsCommandList* cmdList,
         lightData->color_intensity[i] = XMFLOAT4(
             m_lights[i].color.x, m_lights[i].color.y, m_lights[i].color.z, m_lights[i].intensity);
         lightData->range_spotAngle[i] = XMFLOAT4(m_lights[i].range, m_lights[i].spotAngle, 0.0f, 0.0f);
+    }
+
+    // Обновляем буфер света
+    LightBufferGPU* lightBufferData = (LightBufferGPU*)m_lightCBData;
+    if (lightBufferData && !m_lights.empty()) {
+        lightBufferData->lightCount = std::min((UINT)m_lights.size(), 16u);
+        for (UINT i = 0; i < lightBufferData->lightCount; ++i) {
+            lightBufferData->position_type[i] = m_lights[i].GetAsFloat4();
+            lightBufferData->direction[i] = m_lights[i].GetDirectionAsFloat4();
+            lightBufferData->color_intensity[i] = DirectX::XMFLOAT4(
+                m_lights[i].color.x, m_lights[i].color.y, m_lights[i].color.z,
+                m_lights[i].intensity);
+            lightBufferData->range_spotAngle[i] = DirectX::XMFLOAT4(
+                m_lights[i].range, m_lights[i].spotAngle, 0.0f, 0.0f);
+        }
     }
 
     // ============ GEOMETRY PASS ============

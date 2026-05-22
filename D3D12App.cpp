@@ -729,6 +729,8 @@ void D3D12App::RenderFrame() {
         renderData.numMaterials = (UINT)m_materials.size();
         renderData.materials = m_materials.data();
 
+        m_renderingSystem->SetGlobalIntensity(m_lightIntensity);
+
         // Вызываем deferred rendering
         m_renderingSystem->Render(
             m_commandList.Get(),
@@ -833,6 +835,31 @@ void D3D12App::OnKeyDown(WPARAM wParam) {
         break;
     case VK_RIGHT:
         m_camera.Rotate(10, 0);
+        break;
+
+    case 'O':  // Увеличить интенсивность
+        m_lightIntensity += m_lightIntensityStep;
+        if (m_lightIntensity > 5.0f) m_lightIntensity = 5.0f;
+        {
+            char buf[64];
+            sprintf_s(buf, "Light Intensity: %.1f\n", m_lightIntensity);
+            OutputDebugStringA(buf);
+        }
+        break;
+
+    case 'P':  // Уменьшить интенсивность
+        m_lightIntensity -= m_lightIntensityStep;
+        if (m_lightIntensity < 0.0f) m_lightIntensity = 0.0f;
+        {
+            char buf[64];
+            sprintf_s(buf, "Light Intensity: %.1f\n", m_lightIntensity);
+            OutputDebugStringA(buf);
+        }
+        break;
+
+    case '0':  // Сброс до 1.0
+        m_lightIntensity = 1.0f;
+        OutputDebugStringA("Light Intensity Reset to 1.0\n");
         break;
     }
 }
