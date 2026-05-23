@@ -593,15 +593,14 @@ void RenderingSystem::Render(ID3D12GraphicsCommandList* cmdList,
     cmdList->SetGraphicsRootConstantBufferView(0, renderData->cbvAddress);
 
     // Устанавливаем буферы вершин и индексов
-    UINT totalVertices = renderData->indexCount > 0 ? renderData->indexCount * 3 : 1;
     D3D12_VERTEX_BUFFER_VIEW vbv;
     vbv.BufferLocation = renderData->vertexBuffer->GetGPUVirtualAddress();
     vbv.StrideInBytes = sizeof(Vertex);
-    vbv.SizeInBytes = sizeof(Vertex) * totalVertices;
+    vbv.SizeInBytes = (UINT)renderData->vertexBuffer->GetDesc().Width;  // Реальный размер
 
     D3D12_INDEX_BUFFER_VIEW ibv;
     ibv.BufferLocation = renderData->indexBuffer->GetGPUVirtualAddress();
-    ibv.SizeInBytes = renderData->indexCount * sizeof(UINT);
+    ibv.SizeInBytes = (UINT)renderData->indexBuffer->GetDesc().Width;  // Реальный размер
     ibv.Format = DXGI_FORMAT_R32_UINT;
 
     cmdList->IASetVertexBuffers(0, 1, &vbv);
