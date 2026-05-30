@@ -29,9 +29,8 @@ ModelData ModelLoader::LoadOBJ(const std::string& filename, const std::string& b
     ModelData model;
     const float scale = 0.01f;
 
-    // Конвертируем материалы tinyobj в наши материалы
+    // 1. Загружаем материалы
     std::map<int, int> materialIdToIndex;
-
     for (size_t i = 0; i < materials.size(); i++) {
         const auto& mat = materials[i];
         Material material;
@@ -62,13 +61,16 @@ ModelData ModelLoader::LoadOBJ(const std::string& filename, const std::string& b
         materialIdToIndex[-1] = 0;
     }
 
-    // Группировка по материалам
-    std::vector<std::vector<uint32_t>> materialGroups(model.materials.size());
-    std::vector<bool> materialUsed(model.materials.size(), false);
+    // 2. Собираем все вершины и индексы, запоминая материал для каждого полигона
+    struct Face {
+        uint32_t v0, v1, v2;
+        int materialId;
+    };
+    std::vector<Face> faces;
+    std::vector<Vertex> allVertices;
 
     for (const auto& shape : shapes) {
         size_t indexOffset = 0;
-
         for (size_t f = 0; f < shape.mesh.num_face_vertices.size(); f++) {
             int fv = shape.mesh.num_face_vertices[f];
             if (fv != 3) {
@@ -78,27 +80,20 @@ ModelData ModelLoader::LoadOBJ(const std::string& filename, const std::string& b
 
             int materialId = shape.mesh.material_ids[f];
             int materialIndex = 0;
-
             if (materialId >= 0 && materialId < (int)materials.size()) {
                 materialIndex = materialIdToIndex[materialId];
             }
-            else {
-                materialIndex = 0;
-            }
 
-            materialUsed[materialIndex] = true;
-
-            uint32_t baseIndex = (uint32_t)model.vertices.size();
+            uint32_t baseIndex = (uint32_t)allVertices.size();
+            uint32_t indices[3];
 
             for (int v = 0; v < 3; v++) {
                 tinyobj::index_t idx = shape.mesh.indices[indexOffset + v];
 
-                // Позиция
                 float px = attrib.vertices[3 * idx.vertex_index + 0] * scale;
                 float py = attrib.vertices[3 * idx.vertex_index + 1] * scale;
                 float pz = attrib.vertices[3 * idx.vertex_index + 2] * scale;
 
-                // Нормаль
                 float nx = 0.0f, ny = 1.0f, nz = 0.0f;
                 if (idx.normal_index >= 0) {
                     nx = attrib.normals[3 * idx.normal_index + 0];
@@ -106,40 +101,68 @@ ModelData ModelLoader::LoadOBJ(const std::string& filename, const std::string& b
                     nz = attrib.normals[3 * idx.normal_index + 2];
                 }
 
-                // Текстурные координаты
                 float tx = 0.0f, ty = 0.0f;
                 if (idx.texcoord_index >= 0) {
                     tx = attrib.texcoords[2 * idx.texcoord_index + 0];
                     ty = 1.0f - attrib.texcoords[2 * idx.texcoord_index + 1];
                 }
 
-                model.vertices.push_back({ XMFLOAT3(px, py, pz),
-                                           XMFLOAT3(nx, ny, nz),
-                                           XMFLOAT2(tx, ty) });
-                model.indices.push_back((uint32_t)(model.indices.size()));
+                allVertices.push_back({ XMFLOAT3(px, py, pz),
+                                        XMFLOAT3(nx, ny, nz),
+                                        XMFLOAT2(tx, ty) });
+                indices[v] = (uint32_t)(allVertices.size() - 1);
             }
 
-            for (int v = 0; v < 3; v++) {
-                materialGroups[materialIndex].push_back(baseIndex + v);
-            }
-
+            faces.push_back({ indices[0], indices[1], indices[2], materialIndex });
             indexOffset += fv;
         }
     }
 
-    // Формируем финальные массивы
-    for (size_t i = 0; i < model.materials.size(); i++) {
-        if (materialUsed[i] && !materialGroups[i].empty()) {
-            model.materialStartIndex.push_back(materialGroups[i][0]);
-            model.materialIndexCount.push_back((uint32_t)materialGroups[i].size());
+    // 3. Оптимизация: сортируем грани по материалу для лучшей производительности
+    std::sort(faces.begin(), faces.end(), [](const Face& a, const Face& b) {
+        return a.materialId < b.materialId;
+        });
+
+    // 4. Формируем финальные вершины и индексы
+    model.vertices.clear();
+    model.indices.clear();
+    model.materialStartIndex.clear();
+    model.materialIndexCount.clear();
+
+    int currentMaterial = -1;
+    uint32_t startIndex = 0;
+    uint32_t indexCount = 0;
+
+    for (const auto& face : faces) {
+        if (face.materialId != currentMaterial) {
+            if (currentMaterial != -1) {
+                model.materialStartIndex.push_back(startIndex);
+                model.materialIndexCount.push_back(indexCount);
+            }
+            currentMaterial = face.materialId;
+            startIndex = (uint32_t)model.indices.size();
+            indexCount = 0;
         }
-        else if (!materialGroups[i].empty()) {
-            model.materialStartIndex.push_back(materialGroups[i][0]);
-            model.materialIndexCount.push_back((uint32_t)materialGroups[i].size());
-        }
+
+        // Добавляем вершины (с дубликатами для независимости материалов)
+        uint32_t baseIdx = (uint32_t)model.vertices.size();
+        model.vertices.push_back(allVertices[face.v0]);
+        model.vertices.push_back(allVertices[face.v1]);
+        model.vertices.push_back(allVertices[face.v2]);
+
+        model.indices.push_back(baseIdx);
+        model.indices.push_back(baseIdx + 1);
+        model.indices.push_back(baseIdx + 2);
+
+        indexCount += 3;
     }
 
-    // Выводим отладочную информацию
+    if (indexCount > 0) {
+        model.materialStartIndex.push_back(startIndex);
+        model.materialIndexCount.push_back(indexCount);
+    }
+
+    // 5. Диагностика
     char buffer[512];
     sprintf_s(buffer, "\n=== Model Loaded ===\n");
     OutputDebugStringA(buffer);
@@ -152,6 +175,13 @@ ModelData ModelLoader::LoadOBJ(const std::string& filename, const std::string& b
     sprintf_s(buffer, "Material Groups: %zu\n", model.materialStartIndex.size());
     OutputDebugStringA(buffer);
 
+    for (size_t i = 0; i < model.materialStartIndex.size() && i < model.materials.size(); i++) {
+        sprintf_s(buffer, "Group[%zu]: material='%s', startIndex=%u, count=%u\n",
+            i, model.materials[i].name.c_str(),
+            model.materialStartIndex[i], model.materialIndexCount[i]);
+        OutputDebugStringA(buffer);
+    }
+
     return model;
 }
 
@@ -160,11 +190,4 @@ void ModelLoader::DebugPrintInfo(const ModelData& model) {
     sprintf_s(buffer, "Model: %zu vertices, %zu indices in %zu groups\n",
         model.vertices.size(), model.indices.size(), model.materialStartIndex.size());
     OutputDebugStringA(buffer);
-
-    for (size_t i = 0; i < model.materialStartIndex.size() && i < model.materials.size(); i++) {
-        sprintf_s(buffer, "  Group %zu: Material '%s', Start=%u, Count=%u\n",
-            i, model.materials[i].name.c_str(),
-            model.materialStartIndex[i], model.materialIndexCount[i]);
-        OutputDebugStringA(buffer);
-    }
 }
