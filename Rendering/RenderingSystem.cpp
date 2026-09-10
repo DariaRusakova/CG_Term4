@@ -43,14 +43,6 @@ void RenderingSystem::Initialize(ID3D12Device* device, UINT width, UINT height) 
         m_gbufferSrvHeap.Get(),  // <-- Вот как передается srvHeap
         rtvSize, srvSize);
 
-    // Обновляем GPU дескрипторы после создания
-    D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = m_gbufferSrvHeap->GetGPUDescriptorHandleForHeapStart();
-    for (int i = 0; i < GBuffer::GB_COUNT; ++i) {
-        D3D12_GPU_DESCRIPTOR_HANDLE handle;
-        handle.ptr = gpuHandle.ptr + i * srvSize;
-        // Здесь нужно обновить GPU дескрипторы в GBuffer, если это необходимо
-    }
-
     CreateLightBuffers(device);
     CreateFullscreenQuad(device);
     CreateLightingPassPipeline(device);
@@ -91,7 +83,7 @@ void RenderingSystem::Initialize(ID3D12Device* device, UINT width, UINT height) 
     rightColumn.range = 10.0f;
     AddLight(rightColumn);
 
-    // Свет сзади для подсветки задней стены
+    //// Свет сзади для подсветки задней стены
     Light backWall;
     backWall.type = LightType::Point;
     backWall.position = XMFLOAT3(0.0f, 5.0f, -8.0f);
@@ -100,7 +92,7 @@ void RenderingSystem::Initialize(ID3D12Device* device, UINT width, UINT height) 
     backWall.range = 12.0f;
     AddLight(backWall);
 
-    // Передний свет для подсветки входа
+    //// Передний свет для подсветки входа
     Light frontLight;
     frontLight.type = LightType::Point;
     frontLight.position = XMFLOAT3(0.0f, 3.0f, 8.0f);
@@ -109,7 +101,7 @@ void RenderingSystem::Initialize(ID3D12Device* device, UINT width, UINT height) 
     frontLight.range = 14.0f;
     AddLight(frontLight);
 
-    // Spot свет сверху - как свет через окно
+    //// Spot свет сверху - как свет через окно
     Light skylight;
     skylight.type = LightType::Spot;
     skylight.position = XMFLOAT3(0.0f, 10.0f, 0.0f);
@@ -126,26 +118,6 @@ void RenderingSystem::Initialize(ID3D12Device* device, UINT width, UINT height) 
         m_originalIntensities.push_back(light.intensity);
     }
     m_globalIntensity = 0.1f;
-
-
-    D3D12_HEAP_PROPERTIES heapProps = {};
-    heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
-
-    D3D12_RESOURCE_DESC bufferDesc = {};
-    bufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    bufferDesc.Width = sizeof(LightBufferGPU);
-    bufferDesc.Height = 1;
-    bufferDesc.DepthOrArraySize = 1;
-    bufferDesc.MipLevels = 1;
-    bufferDesc.Format = DXGI_FORMAT_UNKNOWN;
-    bufferDesc.SampleDesc.Count = 1;
-    bufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-    device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &bufferDesc,
-        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_lightConstantBuffer));
-
-    D3D12_RANGE readRange = { 0, 0 };
-    m_lightConstantBuffer->Map(0, &readRange, &m_lightCBData);
 }
 
 void RenderingSystem::Resize(UINT width, UINT height) {
@@ -163,11 +135,17 @@ void RenderingSystem::ClearLights() {
     m_lights.clear();
 }
 
+// RenderingSystem.cpp
+
 void RenderingSystem::CreateLightBuffers(ID3D12Device* device) {
     D3D12_RESOURCE_DESC cbDesc = {};
     cbDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
     cbDesc.Alignment = 0;
-    cbDesc.Width = sizeof(LightBuffer);
+
+    // ИСПРАВЛЕНИЕ: Используем размер структуры, которая соответствует шейдеру
+    // Убедитесь, что LightBufferGPU определена и её размер совпадает с cbuffer в шейдере
+    cbDesc.Width = sizeof(LightBufferGPU);
+
     cbDesc.Height = 1;
     cbDesc.DepthOrArraySize = 1;
     cbDesc.MipLevels = 1;
@@ -184,11 +162,20 @@ void RenderingSystem::CreateLightBuffers(ID3D12Device* device) {
     heapProps.CreationNodeMask = 1;
     heapProps.VisibleNodeMask = 1;
 
-    device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &cbDesc,
+    // Создаем ресурс
+    HRESULT hr = device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &cbDesc,
         D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_lightConstantBuffer));
 
+    if (FAILED(hr)) {
+        throw std::runtime_error("Failed to create light constant buffer");
+    }
+
+    // Маппим память
     D3D12_RANGE readRange = { 0, 0 };
-    m_lightConstantBuffer->Map(0, &readRange, &m_lightCBData);
+    hr = m_lightConstantBuffer->Map(0, &readRange, &m_lightCBData);
+    if (FAILED(hr)) {
+        throw std::runtime_error("Failed to map light constant buffer");
+    }
 }
 
 void RenderingSystem::CreateFullscreenQuad(ID3D12Device* device) {
@@ -258,149 +245,89 @@ void RenderingSystem::CreateLightingPassPipeline(ID3D12Device* device) {
     )";
 
     static const char* psCode = R"(
-    Texture2D<float4> AlbedoTex : register(t0);
-    Texture2D<float4> WorldPosTex : register(t1);
-    Texture2D<float4> NormalTex : register(t2);
+Texture2D<float4> AlbedoTex : register(t0);
+Texture2D<float4> WorldPosTex : register(t1);
+Texture2D<float4> NormalTex : register(t2);
 
-    struct LightData {
-        float4 position_type;
-        float4 direction;
-        float4 color_intensity;
-        float4 range_spotAngle;
-    };
+struct LightData {
+    float4 position_type;
+    float4 direction;
+    float4 color_intensity;
+    float4 range_spotAngle;
+};
 
-    cbuffer LightCB : register(b0) {
-        LightData lights[16];
-        uint lightCount;
-        float3 padding;
-    }
+cbuffer LightCB : register(b0) {
+    LightData lights[16];
+    uint lightCount;
+    float3 padding;
+}
 
-    float3 CalculatePointLight(float3 worldPos, float3 normal, float3 viewDir, LightData light) {
-        float3 lightVec = light.position_type.xyz - worldPos;
-        float distance = length(lightVec);
-        float3 lightDir = normalize(lightVec);
+float4 main(float4 position : SV_POSITION) : SV_TARGET {
+    int3 texPos = int3(position.xy, 0);
+    
+    float4 albedo = AlbedoTex.Load(texPos);
+    float4 worldPos = WorldPosTex.Load(texPos);
+    float4 normalData = NormalTex.Load(texPos);
+    
+    // Декодируем нормаль
+    float3 N = normalize(normalData.xyz * 2.0 - 1.0);
+    float3 V = normalize(float3(0.0, 5.0, -10.0) - worldPos.xyz);
+    
+    // Ambient
+    float3 finalColor = albedo.rgb * 0.15;
+    
+    for (uint i = 0; i < lightCount; i++) {
+        uint type = (uint)lights[i].position_type.w;
+        float3 L;
+        float attenuation = 1.0;
+        float spotAtten = 1.0;
         
-        // Attenuation с плавным затуханием
-        float attenuation = saturate(1.0 - distance * distance / (light.range_spotAngle.x * light.range_spotAngle.x));
-        attenuation *= attenuation;
-        
-        // Diffuse
-        float NdotL = saturate(dot(normal, lightDir));
-        float3 diffuse = light.color_intensity.rgb * NdotL * attenuation;
-        
-        // Specular (Blinn-Phong)
-        float3 halfVec = normalize(lightDir + viewDir);
-        float specular = pow(saturate(dot(normal, halfVec)), 64.0);
-        float3 specularColor = light.color_intensity.rgb * specular * attenuation * 0.5;
-        
-        return (diffuse + specularColor) * light.color_intensity.a;
-    }
-
-    float3 CalculateDirectionalLight(float3 normal, float3 viewDir, LightData light) {
-        float3 lightDir = normalize(-light.direction.xyz);
-        
-        // Diffuse
-        float NdotL = saturate(dot(normal, lightDir));
-        float3 diffuse = light.color_intensity.rgb * NdotL;
-        
-        // Specular
-        float3 halfVec = normalize(lightDir + viewDir);
-        float specular = pow(saturate(dot(normal, halfVec)), 64.0);
-        float3 specularColor = light.color_intensity.rgb * specular * 0.3;
-        
-        return (diffuse + specularColor) * light.color_intensity.a;
-    }
-
-    float3 CalculateSpotLight(float3 worldPos, float3 normal, float3 viewDir, LightData light) {
-        float3 lightVec = light.position_type.xyz - worldPos;
-        float distance = length(lightVec);
-        float3 lightDir = normalize(lightVec);
-        
-        // Attenuation
-        float attenuation = saturate(1.0 - distance * distance / (light.range_spotAngle.x * light.range_spotAngle.x));
-        attenuation *= attenuation;
-        
-        // Spot cone
-        float spotFactor = dot(-lightDir, normalize(light.direction.xyz));
-        float spotCutoff = cos(light.range_spotAngle.y);
-        float spotAtten = smoothstep(spotCutoff, spotCutoff + 0.1, spotFactor);
-        
-        // Diffuse
-        float NdotL = saturate(dot(normal, lightDir));
-        float3 diffuse = light.color_intensity.rgb * NdotL * attenuation * spotAtten;
-        
-        // Specular
-        float3 halfVec = normalize(lightDir + viewDir);
-        float specular = pow(saturate(dot(normal, halfVec)), 64.0);
-        float3 specularColor = light.color_intensity.rgb * specular * attenuation * spotAtten * 0.5;
-        
-        return (diffuse + specularColor) * light.color_intensity.a;
-    }
-
-    float4 main(float4 position : SV_POSITION) : SV_TARGET {
-        int3 texPos = int3(position.xy, 0);
-        
-        float4 albedo = AlbedoTex.Load(texPos);
-        float4 worldPos = WorldPosTex.Load(texPos);
-        float4 normalData = NormalTex.Load(texPos);
-        
-        // Декодируем нормаль из [0,1] в [-1,1]
-        float3 N = normalize(normalData.xyz * 2.0 - 1.0);
-        
-        // Вычисляем направление взгляда
-        float3 V = normalize(float3(0.0, 5.0, -10.0) - worldPos.xyz);
-        
-        // Ambient - теплый оттенок для натуральности
-        float3 ambient = albedo.rgb * float3(0.1, 0.09, 0.07);
-        
-        // Начинаем с ambient
-        float3 finalColor = ambient;
-        
-        // Суммируем все источники света
-        for (uint i = 0; i < lightCount; i++) {
-            uint type = (uint)lights[i].position_type.w;
+        if (type == 1) { // Directional
+            L = normalize(-lights[i].direction.xyz);
+        } 
+        else if (type == 0) { // Point
+            float3 lightVec = lights[i].position_type.xyz - worldPos.xyz;
+            float dist = length(lightVec);
+            L = normalize(lightVec);
+            attenuation = saturate(1.0 - dist / lights[i].range_spotAngle.x);
+            attenuation *= attenuation;
+        }
+        else if (type == 2) { // Spot
+            float3 lightVec = lights[i].position_type.xyz - worldPos.xyz;
+            float dist = length(lightVec);
+            L = normalize(lightVec);
             
-            if (type == 0) {
-                // Point Light
-                finalColor += CalculatePointLight(worldPos.xyz, N, V, lights[i]);
-            }
-            else if (type == 1) {
-                // Directional Light
-                finalColor += CalculateDirectionalLight(N, V, lights[i]);
-            }
-            else if (type == 2) {
-                // Spot Light
-                finalColor += CalculateSpotLight(worldPos.xyz, N, V, lights[i]);
-            }
+            attenuation = saturate(1.0 - dist / lights[i].range_spotAngle.x);
+            attenuation *= attenuation;
+            
+            float spotCos = dot(-L, normalize(lights[i].direction.xyz));
+            float cutoff = cos(lights[i].range_spotAngle.y);
+            spotAtten = smoothstep(cutoff, cutoff + 0.2, spotCos);
         }
         
-        // Умножаем на albedo для цвета поверхности
-        finalColor = finalColor * albedo.rgb;
+        float NdotL = saturate(dot(N, L));
+        float3 diffuse = lights[i].color_intensity.rgb * NdotL * lights[i].color_intensity.a * attenuation * spotAtten;
         
-        // Добавляем небольшое заполняющее освещение снизу
-        float3 fillLight = float3(0.05, 0.04, 0.03) * albedo.rgb * saturate(-N.y);
-        finalColor += fillLight;
-        
-        // Tone mapping - Reinhard
-        finalColor = finalColor / (finalColor + float3(1.0, 1.0, 1.0));
-        
-        // Гамма-коррекция
-        finalColor = pow(finalColor, float3(1.0/2.2, 1.0/2.2, 1.0/2.2));
-        
-        return float4(finalColor, 1.0);
+        finalColor += diffuse;
     }
+    
+    finalColor *= albedo.rgb;
+    finalColor = pow(finalColor, float3(1.0/2.2, 1.0/2.2, 1.0/2.2));
+    
+    return float4(finalColor, 1.0);
+}
 )";
 
     ComPtr<ID3DBlob> vsBlob, psBlob, errorBlob;
 
-    HRESULT hr = D3DCompile(Shaders::LightPassVS, strlen(Shaders::LightPassVS),
+    HRESULT hr = D3DCompile(vsCode, strlen(vsCode),
         nullptr, nullptr, nullptr, "main", "vs_5_0", 0, 0, &vsBlob, &errorBlob);
     if (FAILED(hr)) {
         if (errorBlob) OutputDebugStringA((char*)errorBlob->GetBufferPointer());
         throw std::runtime_error("Failed to compile lighting VS");
     }
 
-    hr = D3DCompile(Shaders::LightPassPS, strlen(Shaders::LightPassPS),
+    hr = D3DCompile(psCode, strlen(psCode),
         nullptr, nullptr, nullptr, "main", "ps_5_0", 0, 0, &psBlob, &errorBlob);
 
     if (FAILED(hr)) {
@@ -536,37 +463,23 @@ void RenderingSystem::Render(ID3D12GraphicsCommandList* cmdList,
         return;
     }
 
-    // Обновляем данные света
-    LightBuffer* lightData = (LightBuffer*)m_lightCBData;
-    if (!lightData) {
+    if (!m_lightCBData) {
         OutputDebugStringA("Light buffer not mapped\n");
         return;
     }
 
-    memset(lightData, 0, sizeof(LightBuffer));
-    lightData->lightCount = (UINT)m_lights.size();
+    // Очищаем и заполняем буфер
+    memset(m_lightCBData, 0, sizeof(LightBufferGPU));
+    LightBufferGPU* lightData = reinterpret_cast<LightBufferGPU*>(m_lightCBData);
 
-    for (size_t i = 0; i < m_lights.size() && i < 16; ++i) {
-        lightData->position_type[i] = m_lights[i].GetAsFloat4();
-        lightData->direction[i] = m_lights[i].GetDirectionAsFloat4();
-        lightData->color_intensity[i] = XMFLOAT4(
-            m_lights[i].color.x, m_lights[i].color.y, m_lights[i].color.z, m_lights[i].intensity);
-        lightData->range_spotAngle[i] = XMFLOAT4(m_lights[i].range, m_lights[i].spotAngle, 0.0f, 0.0f);
-    }
+    lightData->lightCount = std::min((UINT)m_lights.size(), 16u);
 
-    // Обновляем буфер света
-    LightBufferGPU* lightBufferData = (LightBufferGPU*)m_lightCBData;
-    if (lightBufferData && !m_lights.empty()) {
-        lightBufferData->lightCount = std::min((UINT)m_lights.size(), 16u);
-        for (UINT i = 0; i < lightBufferData->lightCount; ++i) {
-            lightBufferData->position_type[i] = m_lights[i].GetAsFloat4();
-            lightBufferData->direction[i] = m_lights[i].GetDirectionAsFloat4();
-            lightBufferData->color_intensity[i] = DirectX::XMFLOAT4(
-                m_lights[i].color.x, m_lights[i].color.y, m_lights[i].color.z,
-                m_lights[i].intensity);
-            lightBufferData->range_spotAngle[i] = DirectX::XMFLOAT4(
-                m_lights[i].range, m_lights[i].spotAngle, 0.0f, 0.0f);
-        }
+    for (UINT i = 0; i < lightData->lightCount; ++i) {
+        const Light& light = m_lights[i];
+        lightData->lights[i].position_type = light.GetAsFloat4();
+        lightData->lights[i].direction = light.GetDirectionAsFloat4();
+        lightData->lights[i].color_intensity = XMFLOAT4(light.color.x, light.color.y, light.color.z, light.intensity);
+        lightData->lights[i].range_spotAngle = XMFLOAT4(light.range, light.spotAngle, 0.0f, 0.0f);
     }
 
     // ============ GEOMETRY PASS ============

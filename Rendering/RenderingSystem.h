@@ -80,20 +80,15 @@ private:
     UINT m_width = 0;
     UINT m_height = 0;
 
-    struct LightBuffer {
-        DirectX::XMFLOAT4 position_type[16];
-        DirectX::XMFLOAT4 direction[16];
-        DirectX::XMFLOAT4 color_intensity[16];
-        DirectX::XMFLOAT4 range_spotAngle[16];
-        UINT lightCount;
-        float padding[3];
+    struct LightDataGPU {
+        DirectX::XMFLOAT4 position_type;
+        DirectX::XMFLOAT4 direction;
+        DirectX::XMFLOAT4 color_intensity;
+        DirectX::XMFLOAT4 range_spotAngle;
     };
 
     struct LightBufferGPU {
-        DirectX::XMFLOAT4 position_type[16];
-        DirectX::XMFLOAT4 direction[16];
-        DirectX::XMFLOAT4 color_intensity[16];
-        DirectX::XMFLOAT4 range_spotAngle[16];
+        LightDataGPU lights[16]; // Теперь layout совпадает с HLSL
         UINT lightCount;
         float padding[3];
     };

@@ -19,7 +19,7 @@ struct Light {
     float padding;
 
     DirectX::XMFLOAT4 GetAsFloat4() const {
-        return DirectX::XMFLOAT4(position.x, position.y, position.z, (float)type);
+        return DirectX::XMFLOAT4(position.x, position.y, position.z, static_cast<float>(type));
     }
 
     DirectX::XMFLOAT4 GetDirectionAsFloat4() const {
