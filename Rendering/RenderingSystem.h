@@ -7,8 +7,9 @@
 #include <directxmath.h>
 #include "GBuffer.h"
 #include "Light.h"
-#include "../Model/Material.h"
+#include "Model/Material.h"
 #include "Shaders/DeferredLightPass.h"
+#include "PostProcess/PostProcessSystem.h"
 
 class RenderingSystem {
 public:
@@ -58,6 +59,30 @@ public:
     void RenderShadowMapDebug(ID3D12GraphicsCommandList* cmdList,
         D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle);
 
+    void SetPostProcessSystem(std::unique_ptr<PostProcessSystem> postProcessSystem)
+    {
+        m_postProcessSystem = std::move(postProcessSystem);
+    }
+
+    PostProcessSystem* GetPostProcessSystem() const
+    {
+        return m_postProcessSystem.get();
+    }
+
+    void SetRenderTargetSize(UINT width, UINT height)
+    {
+        m_backbufferWidth = width;
+        m_backbufferHeight = height;
+    }
+
+    void RenderPostProcess(
+        ID3D12GraphicsCommandList* cmdList,
+        D3D12_CPU_DESCRIPTOR_HANDLE backBufferRTV,
+        UINT targetWidth,
+        UINT targetHeight,
+        PostProcessSystem::EffectType effect = PostProcessSystem::EffectType::Sepia
+    );
+
 private:
     void CreateLightBuffers(ID3D12Device* device);
     void CreateFullscreenQuad(ID3D12Device* device);
@@ -99,4 +124,10 @@ private:
         UINT lightCount;
         float padding[3];
     };
+
+
+    std::unique_ptr<PostProcessSystem> m_postProcessSystem;
+
+    UINT m_backbufferWidth = 0;
+    UINT m_backbufferHeight = 0;
 };

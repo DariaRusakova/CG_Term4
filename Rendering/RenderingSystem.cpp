@@ -480,18 +480,26 @@ void RenderingSystem::Render(ID3D12GraphicsCommandList* cmdList,
 
     // Обновляем данные света
     memset(m_lightCBData, 0, sizeof(LightBufferGPU));
-    LightBufferGPU* lightData = reinterpret_cast<LightBufferGPU*>(m_lightCBData);
+    LightBufferGPU * lightData = reinterpret_cast<LightBufferGPU*>(m_lightCBData);
     lightData->lightCount = std::min((UINT)m_lights.size(), 16u);
     for (UINT i = 0; i < lightData->lightCount; ++i) {
-        const Light& light = m_lights[i];
+        const Light & light = m_lights[i];
         lightData->lights[i].position_type = light.GetAsFloat4();
         lightData->lights[i].direction = light.GetDirectionAsFloat4();
         lightData->lights[i].color_intensity = XMFLOAT4(light.color.x, light.color.y, light.color.z, light.intensity * m_globalIntensity);
         lightData->lights[i].range_spotAngle = XMFLOAT4(light.range, light.spotAngle, 0.0f, 0.0f);
     }
 
-    D3D12_VIEWPORT mainViewport = { 0.0f, 0.0f, (float)m_width, (float)m_height, 0.0f, 1.0f };
-    D3D12_RECT mainScissor = { 0, 0, (LONG)m_width, (LONG)m_height };
+    // ============================================
+    // УСТАНАВЛИВАЕМ VIEWPORT ДЛЯ ВСЕГО РЕНДЕРА
+    // ============================================
+    UINT viewportWidth = m_backbufferWidth > 0 ? m_backbufferWidth : m_width;
+    UINT viewportHeight = m_backbufferHeight > 0 ? m_backbufferHeight : m_height;
+
+    D3D12_VIEWPORT mainViewport = { 0.0f, 0.0f, (float)viewportWidth, (float)viewportHeight, 0.0f, 1.0f };
+    D3D12_RECT mainScissor = { 0, 0, (LONG)viewportWidth, (LONG)viewportHeight };
+
+    // Устанавливаем viewport ОДИН РАЗ для всего метода
     cmdList->RSSetViewports(1, &mainViewport);
     cmdList->RSSetScissorRects(1, &mainScissor);
 
@@ -567,6 +575,10 @@ void RenderingSystem::Render(ID3D12GraphicsCommandList* cmdList,
     // ============================================
     // LIGHTING PASS
     // ============================================
+    // СНОВА УСТАНАВЛИВАЕМ VIEWPORT (на случай, если он сбросился)
+    cmdList->RSSetViewports(1, &mainViewport);
+    cmdList->RSSetScissorRects(1, &mainScissor);
+
     ID3D12DescriptorHeap* ppHeaps[] = { m_combinedSrvHeap.Get() };
     cmdList->SetDescriptorHeaps(_countof(ppHeaps), ppHeaps);
 
@@ -729,4 +741,38 @@ void RenderingSystem::RenderShadowMapDebug(ID3D12GraphicsCommandList* cmdList,
     cmdList->IASetVertexBuffers(0, 1, &m_fullscreenVBView);
     cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
     cmdList->DrawInstanced(4, 1, 0, 0);
+}
+
+void RenderingSystem::RenderPostProcess(
+    ID3D12GraphicsCommandList* cmdList,
+    D3D12_CPU_DESCRIPTOR_HANDLE backBufferRTV,
+    UINT targetWidth,
+    UINT targetHeight,
+    PostProcessSystem::EffectType effect)
+{
+
+    if (effect == PostProcessSystem::EffectType::Off)
+    {
+        return;  // Просто выходим, lighting pass уже отрендерил backbuffer
+    }
+
+    if (!m_postProcessSystem)
+        return;
+
+    // Get GBuffer textures
+    ID3D12Resource* albedo = m_gbuffer->GetResource(GBuffer::GB_ALBEDO);
+    ID3D12Resource* worldPos = m_gbuffer->GetResource(GBuffer::GB_WORLD_POS);
+    ID3D12Resource* normal = m_gbuffer->GetResource(GBuffer::GB_NORMAL);
+
+    // Set GBuffer resources in post-process system
+    m_postProcessSystem->SetGBufferResources(albedo, worldPos, normal);
+
+    // Render post-processing directly to backbuffer with correct size
+    m_postProcessSystem->Render(
+        cmdList,
+        backBufferRTV,
+        targetWidth,    // Реальный размер backbuffer
+        targetHeight,   // Реальный размер backbuffer
+        effect
+    );
 }

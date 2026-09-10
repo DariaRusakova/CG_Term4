@@ -35,6 +35,14 @@ D3D12App::~D3D12App() {
 void D3D12App::Shutdown() {
     WaitForGpu();
     if (m_fenceEvent) CloseHandle(m_fenceEvent);
+
+    // Освобождаем пост-процессинг систему
+    if (m_renderingSystem) {
+        // PostProcessSystem будет уничтожен вместе с RenderingSystem
+        // или можно явно вызвать Release
+        m_renderingSystem.reset();
+    }
+
     for (uint32_t i = 0; i < kFrameCount; ++i) {
         if (m_constantBuffer[i] && m_cbvDataBegin[i]) {
             m_constantBuffer[i]->Unmap(0, nullptr);
@@ -366,17 +374,31 @@ bool D3D12App::Initialize(HWND hwnd) {
         CreateDescriptorHeaps();
         CreateDepthStencil();
 
-        // Инициализация системы теней (единственный экземпляр)
+        // ================================================
+        // 1. ИНИЦИАЛИЗАЦИЯ СИСТЕМЫ ТЕНЕЙ
+        // ================================================
         m_shadowMapSystem = std::make_unique<ShadowMapSystem>();
         m_shadowMapSystem->Initialize(m_device.Get());
 
+        // ================================================
+        // 2. СОЗДАНИЕ ROOT SIGNATURE И PSO
+        // ================================================
         CreateGeometryPassRootSignature();
         CreateGeometryPassPipelineState();
         CreateShadowPassPipelineState();
 
-        // Инициализируем систему рендеринга
+        // ================================================
+        // 3. ИНИЦИАЛИЗАЦИЯ СИСТЕМЫ РЕНДЕРИНГА
+        // ================================================
         m_renderingSystem = std::make_unique<RenderingSystem>();
-        m_renderingSystem->Initialize(m_device.Get(), kWidth, kHeight);
+        RECT clientRect;
+        GetClientRect(hwnd, &clientRect);
+        UINT windowWidth = clientRect.right - clientRect.left;
+        UINT windowHeight = clientRect.bottom - clientRect.top;
+
+        // Используем реальный размер для GBuffer
+        m_renderingSystem->Initialize(m_device.Get(), windowWidth, windowHeight);
+        m_renderingSystem->SetRenderTargetSize(windowWidth, windowHeight);
 
         // Передаем ресурсы тени в RenderingSystem
         m_renderingSystem->SetShadowResources(
@@ -384,14 +406,38 @@ bool D3D12App::Initialize(HWND hwnd) {
             m_shadowMapSystem->GetSRV()
         );
 
-        // Копируем дескриптор SRV тени в комбинированный хип RenderingSystem
+        // ================================================
+        // КОПИРОВАНИЕ ДЕСКРИПТОРА ТЕНИ (ИСПРАВЛЕННО)
+        // ================================================
         D3D12_CPU_DESCRIPTOR_HANDLE destCpuHandle = m_renderingSystem->GetCombinedSrvHeap()->GetCPUDescriptorHandleForHeapStart();
-        destCpuHandle.ptr += GBuffer::GB_COUNT * m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        UINT srvDescriptorSize = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        destCpuHandle.ptr += GBuffer::GB_COUNT * srvDescriptorSize;
 
         D3D12_CPU_DESCRIPTOR_HANDLE srcCpuHandle = m_shadowMapSystem->GetSRVHeap()->GetCPUDescriptorHandleForHeapStart();
-        m_device->CopyDescriptorsSimple(1, destCpuHandle, srcCpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-        // Загружаем модель
+        D3D12_CPU_DESCRIPTOR_HANDLE srcHandles[] = { srcCpuHandle };
+        D3D12_CPU_DESCRIPTOR_HANDLE destHandles[] = { destCpuHandle };
+
+        m_device->CopyDescriptors(
+            1,
+            destHandles,
+            nullptr,
+            1,
+            srcHandles,
+            nullptr,
+            D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV
+        );
+
+        // ================================================
+        // 4. ИНИЦИАЛИЗАЦИЯ POST-PROCESSING СИСТЕМЫ
+        // ================================================
+        auto postProcessSystem = std::make_unique<PostProcessSystem>();
+        postProcessSystem->Initialize(m_device.Get(), kWidth, kHeight);
+        m_renderingSystem->SetPostProcessSystem(std::move(postProcessSystem));
+
+        // ================================================
+        // 5. ЗАГРУЗКА МОДЕЛИ И ТЕКСТУР
+        // ================================================
         ModelData model = ModelLoader::LoadOBJ("assets/sponza.obj", "assets");
         m_vertices = model.vertices;
         m_indices = model.indices;
@@ -399,7 +445,6 @@ bool D3D12App::Initialize(HWND hwnd) {
         m_materialStartIndex = model.materialStartIndex;
         m_materialIndexCount = model.materialIndexCount;
 
-        // Загружаем текстуры
         m_commandList->Reset(m_commandAllocators[0].Get(), nullptr);
         for (size_t i = 0; i < m_materials.size(); i++) {
             auto& material = m_materials[i];
@@ -430,7 +475,14 @@ bool D3D12App::Initialize(HWND hwnd) {
         m_viewport = { 0.0f, 0.0f, (float)kWidth, (float)kHeight, 0.0f, 1.0f };
         m_scissorRect = { 0, 0, (LONG)kWidth, (LONG)kHeight };
 
+        m_currentPostProcessEffect = PostProcessSystem::EffectType::Sepia;
+
         OutputDebugStringA("\n=== Deferred Rendering Init Complete ===\n");
+        OutputDebugStringA("Press 1-4 to change post-process effect:\n");
+        OutputDebugStringA("  1: ReadGBuffer (Debug)\n");
+        OutputDebugStringA("  2: Sepia\n");
+        OutputDebugStringA("  3: Edge Detection\n");
+        OutputDebugStringA("  4: Off\n");
         return true;
     }
     catch (std::exception& e) {
@@ -696,9 +748,11 @@ void D3D12App::RenderShadowMapPass(ID3D12GraphicsCommandList* cmdList) {
     cmdList->ResourceBarrier(1, &barrier);
 }
 
-
 void D3D12App::RenderFrame() {
     try {
+        // ================================================
+        // ПОДГОТОВКА КАДРА
+        // ================================================
         m_frameIndex = m_swapChain->GetCurrentBackBufferIndex();
         WaitForPreviousFrame();
         ThrowIfFailed(m_commandAllocators[m_frameIndex]->Reset());
@@ -706,11 +760,20 @@ void D3D12App::RenderFrame() {
 
         UpdateConstantBuffer(m_frameIndex);
 
-        m_viewport = { 0.0f, 0.0f, (float)kWidth, (float)kHeight, 0.0f, 1.0f };
-        m_scissorRect = { 0, 0, (LONG)kWidth, (LONG)kHeight };
-        m_commandList->RSSetViewports(1, &m_viewport);
-        m_commandList->RSSetScissorRects(1, &m_scissorRect);
+        // ================================================
+        // ПОЛУЧАЕМ РЕАЛЬНЫЙ РАЗМЕР BACKBUFFER
+        // ================================================
+        D3D12_RESOURCE_DESC backbufferDesc = m_renderTargets[m_frameIndex]->GetDesc();
+        UINT backbufferWidth = (UINT)backbufferDesc.Width;
+        UINT backbufferHeight = (UINT)backbufferDesc.Height;
 
+        // Устанавливаем viewport на размер backbuffer
+        m_viewport = { 0.0f, 0.0f, (float)backbufferWidth, (float)backbufferHeight, 0.0f, 1.0f };
+        m_scissorRect = { 0, 0, (LONG)backbufferWidth, (LONG)backbufferHeight };
+
+        // ================================================
+        // ПЕРЕХОД BACKBUFFER В RENDER_TARGET
+        // ================================================
         D3D12_RESOURCE_BARRIER barrier = {};
         barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
@@ -724,10 +787,18 @@ void D3D12App::RenderFrame() {
         rtvHandle.ptr += m_frameIndex * m_rtvDescriptorSize;
         D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = m_dsvHeap->GetCPUDescriptorHandleForHeapStart();
 
-        // 1. Shadow Pass
+        // ================================================
+        // 1. SHADOW PASS
+        // ================================================
         RenderShadowMapPass(m_commandList.Get());
 
-        // 2. Geometry + Lighting Pass (теперь с визуализацией shadowFactor)
+        // ================================================
+        // 2. GEOMETRY + LIGHTING PASS
+        // ================================================
+        // Устанавливаем viewport для GEOMETRY + LIGHTING PASS
+        m_commandList->RSSetViewports(1, &m_viewport);
+        m_commandList->RSSetScissorRects(1, &m_scissorRect);
+
         ID3D12DescriptorHeap* ppHeaps[] = { m_srvHeap.Get() };
         m_commandList->SetDescriptorHeaps(_countof(ppHeaps), ppHeaps);
 
@@ -745,6 +816,10 @@ void D3D12App::RenderFrame() {
 
         m_renderingSystem->SetGlobalIntensity(m_lightIntensity);
 
+        // IMPORTANT: Передаем РЕАЛЬНЫЙ размер backbuffer в RenderingSystem
+        m_renderingSystem->SetRenderTargetSize(backbufferWidth, backbufferHeight);
+
+        // Lighting pass рендерит в backbuffer
         m_renderingSystem->Render(
             m_commandList.Get(),
             m_depthStencil.Get(),
@@ -755,10 +830,31 @@ void D3D12App::RenderFrame() {
             &renderData
         );
 
+        // ================================================
+        // 3. POST-PROCESSING PASS
+        // ================================================
+        // Устанавливаем viewport для POST-PROCESSING (такой же)
+        m_commandList->RSSetViewports(1, &m_viewport);
+        m_commandList->RSSetScissorRects(1, &m_scissorRect);
+
+        m_renderingSystem->RenderPostProcess(
+            m_commandList.Get(),
+            rtvHandle,
+            backbufferWidth,
+            backbufferHeight,
+            m_currentPostProcessEffect
+        );
+
+        // ================================================
+        // 4. ПЕРЕХОД BACKBUFFER В PRESENT
+        // ================================================
         barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
         barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
         m_commandList->ResourceBarrier(1, &barrier);
 
+        // ================================================
+        // 5. ВЫПОЛНЕНИЕ И ПРЕЗЕНТАЦИЯ
+        // ================================================
         ThrowIfFailed(m_commandList->Close());
         ID3D12CommandList* commandLists[] = { m_commandList.Get() };
         m_commandQueue->ExecuteCommandLists(1, commandLists);
@@ -822,6 +918,8 @@ void D3D12App::OnMouseMove(int x, int y) {
     }
 }
 
+// В методе D3D12App::OnKeyDown добавьте следующие case'ы:
+
 void D3D12App::OnKeyDown(WPARAM wParam) {
     switch (wParam) {
     case 'W':
@@ -863,6 +961,29 @@ void D3D12App::OnKeyDown(WPARAM wParam) {
     case '0':
         m_lightIntensity = 1.0f;
         OutputDebugStringA("Light Intensity Reset to 1.0\n");
+        break;
+
+        // ================================================
+        // НОВЫЕ КЛАВИШИ ДЛЯ POST-PROCESSING
+        // ================================================
+    case '1':  // ReadGBuffer (debug)
+        m_currentPostProcessEffect = PostProcessSystem::EffectType::ReadGBuffer;
+        OutputDebugStringA("Post-Process: ReadGBuffer (Debug)\n");
+        break;
+
+    case '2':  // Sepia
+        m_currentPostProcessEffect = PostProcessSystem::EffectType::Sepia;
+        OutputDebugStringA("Post-Process: Sepia\n");
+        break;
+
+    case '3':  // Edge Detection
+        m_currentPostProcessEffect = PostProcessSystem::EffectType::EdgeDetection;
+        OutputDebugStringA("Post-Process: Edge Detection\n");
+        break;
+
+    case '4':  // Off (no post-processing)
+        m_currentPostProcessEffect = PostProcessSystem::EffectType::Off;
+        OutputDebugStringA("Post-Process: Off\n");
         break;
     }
 }

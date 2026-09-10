@@ -13,6 +13,7 @@
 #include "Shaders/DeferredGeometryPass.h"
 #include "Shaders/DeferredLightPass.h"
 #include "Shadows/ShadowMap.h"
+#include "PostProcess/PostProcessSystem.h"
 
 struct alignas(256) SceneConstantBuffer {
     DirectX::XMFLOAT4X4 worldViewProj;
@@ -50,6 +51,17 @@ public:
     ID3D12PipelineState* m_shadowPSO = nullptr; // PSO только для глубины
     void CreateShadowPassPipelineState();
     void RenderShadowMapPass(ID3D12GraphicsCommandList* cmdList);
+
+    void SetPostProcessEffect(PostProcessSystem::EffectType effect)
+    {
+        m_currentPostProcessEffect = effect;
+    }
+    PostProcessSystem::EffectType GetPostProcessEffect() const
+    {
+        return m_currentPostProcessEffect;
+    }
+    //void CopyPostProcessToBackBuffer(ID3D12GraphicsCommandList* cmdList, uint32_t frameIndex);
+
 private:
     static constexpr uint32_t kFrameCount = 2;
     static constexpr uint32_t kWidth = 1024;
@@ -149,4 +161,6 @@ private:
 
     D3D12_VIEWPORT m_viewport;
     D3D12_RECT m_scissorRect;
+
+    PostProcessSystem::EffectType m_currentPostProcessEffect = PostProcessSystem::EffectType::Sepia;
 };
