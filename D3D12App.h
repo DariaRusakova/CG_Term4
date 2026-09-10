@@ -12,6 +12,7 @@
 #include "Rendering/RenderingSystem.h"
 #include "Shaders/DeferredGeometryPass.h"
 #include "Shaders/DeferredLightPass.h"
+#include "Shadows/ShadowMap.h"
 
 struct alignas(256) SceneConstantBuffer {
     DirectX::XMFLOAT4X4 worldViewProj;
@@ -38,7 +39,6 @@ public:
     void RenderFrame();
     void Shutdown();
     UINT GetSRVDescriptorSize() const { return m_srvDescriptorSize; }
-
     // Input handling
     void OnMouseWheel(int delta);
     void OnMouseDown(int x, int y);
@@ -46,7 +46,10 @@ public:
     void OnMouseMove(int x, int y);
     void OnKeyDown(WPARAM wParam);
     void ResetCamera();
-
+    std::unique_ptr<ShadowMapSystem> m_shadowMapSystem;
+    ID3D12PipelineState* m_shadowPSO = nullptr; // PSO только для глубины
+    void CreateShadowPassPipelineState();
+    void RenderShadowMapPass(ID3D12GraphicsCommandList* cmdList);
 private:
     static constexpr uint32_t kFrameCount = 2;
     static constexpr uint32_t kWidth = 1024;
@@ -85,7 +88,7 @@ private:
 
     // Система рендеринга
     std::unique_ptr<RenderingSystem> m_renderingSystem;
-
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> m_shadowRootSig;
     // D3D12 objects
     Microsoft::WRL::ComPtr<ID3D12Device> m_device;
     Microsoft::WRL::ComPtr<ID3D12CommandQueue> m_commandQueue;
