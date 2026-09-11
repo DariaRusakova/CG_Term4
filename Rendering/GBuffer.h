@@ -9,6 +9,7 @@ public:
         GB_ALBEDO = 0,
         GB_WORLD_POS,
         GB_NORMAL,
+        GB_PBR,          // Новый: metallic/roughness/ao
         GB_COUNT
     };
 

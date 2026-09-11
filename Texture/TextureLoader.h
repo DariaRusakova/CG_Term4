@@ -9,6 +9,7 @@ struct Texture {
     Microsoft::WRL::ComPtr<ID3D12Resource> uploadHeap;
     int width = 0;
     int height = 0;
+    int mipLevels = 1;
     DXGI_FORMAT format = DXGI_FORMAT_R8G8B8A8_UNORM;
     std::string filename;
 };
@@ -17,4 +18,10 @@ class TextureLoader {
 public:
     static Texture LoadTexture(ID3D12Device* device, ID3D12GraphicsCommandList* commandList, const std::string& filename);
     static Texture CreateDefaultTexture(ID3D12Device* device, ID3D12GraphicsCommandList* commandList);
+
+    // IBL текстуры
+    static Texture LoadDDSTexture(ID3D12Device* device, ID3D12GraphicsCommandList* commandList, const std::string& filename);
+    static Texture LoadIrradianceMap(ID3D12Device* device, ID3D12GraphicsCommandList* commandList, const std::string& filename);
+    static Texture LoadPrefilteredMap(ID3D12Device* device, ID3D12GraphicsCommandList* commandList, const std::string& filename);
+    static Texture LoadBRDFLUT(ID3D12Device* device, ID3D12GraphicsCommandList* commandList, const std::string& filename);
 };

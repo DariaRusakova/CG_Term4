@@ -8,13 +8,15 @@ void GBuffer::Initialize(ID3D12Device* device, UINT width, UINT height) {
     DXGI_FORMAT formats[GB_COUNT] = {
         DXGI_FORMAT_R8G8B8A8_UNORM,     // Albedo
         DXGI_FORMAT_R32G32B32A32_FLOAT,  // World Position
-        DXGI_FORMAT_R32G32B32A32_FLOAT   // Normal
+        DXGI_FORMAT_R32G32B32A32_FLOAT,  // Normal
+        DXGI_FORMAT_R8G8B8A8_UNORM       // PBR: metallic (R), roughness (G), ao (B), unused (A)
     };
 
     D3D12_CLEAR_VALUE clearValues[GB_COUNT] = {
         { DXGI_FORMAT_R8G8B8A8_UNORM, { 0.0f, 0.0f, 0.0f, 1.0f } },
         { DXGI_FORMAT_R32G32B32A32_FLOAT, { 0.0f, 0.0f, 0.0f, 1.0f } },
-        { DXGI_FORMAT_R32G32B32A32_FLOAT, { 0.0f, 0.0f, 0.0f, 1.0f } }
+        { DXGI_FORMAT_R32G32B32A32_FLOAT, { 0.0f, 0.0f, 0.0f, 1.0f } },
+        { DXGI_FORMAT_R8G8B8A8_UNORM, { 0.0f, 0.5f, 1.0f, 0.0f } } // metallic=0, roughness=0.5, ao=1.0
     };
 
     for (int i = 0; i < GB_COUNT; ++i) {
@@ -62,7 +64,8 @@ void GBuffer::CreateDescriptors(ID3D12Device* device,
     DXGI_FORMAT formats[GB_COUNT] = {
         DXGI_FORMAT_R8G8B8A8_UNORM,
         DXGI_FORMAT_R32G32B32A32_FLOAT,
-        DXGI_FORMAT_R32G32B32A32_FLOAT
+        DXGI_FORMAT_R32G32B32A32_FLOAT,
+        DXGI_FORMAT_R8G8B8A8_UNORM
     };
 
     for (int i = 0; i < GB_COUNT; ++i) {

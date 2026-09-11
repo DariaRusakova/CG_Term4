@@ -22,7 +22,8 @@ void RenderingSystem::Initialize(ID3D12Device* device, UINT width, UINT height) 
     m_height = height;
     m_srvDescriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-    // Создаем комбинированный heap для GBuffer + место под тень
+    // Создаем комбинированный heap для GBuffer + ShadowMap
+    // GBuffer (4) + ShadowMap (1) = 5
     CreateCombinedSrvHeap(device);
 
     // Инициализация GBuffer
@@ -54,65 +55,10 @@ void RenderingSystem::Initialize(ID3D12Device* device, UINT width, UINT height) 
     // Основной направленный свет (солнце) - теплый оттенок
     Light sunLight;
     sunLight.type = LightType::Directional;
-    sunLight.direction = XMFLOAT3(0.3f, -0.8f, 0.5f);  // Направление солнца
-    sunLight.color = XMFLOAT4(1.0f, 0.9f, 0.7f, 1.0f);  // Теплый солнечный цвет
+    sunLight.direction = XMFLOAT3(0.3f, -0.8f, 0.5f);
+    sunLight.color = XMFLOAT4(1.0f, 0.9f, 0.7f, 1.0f);
     sunLight.intensity = 0.8f;
     AddLight(sunLight);
-
-    //// Точечный свет в центре атриума (теплый)
-    //Light centerLight;
-    //centerLight.type = LightType::Point;
-    //centerLight.position = XMFLOAT3(0.0f, 4.0f, 0.0f);
-    //centerLight.color = XMFLOAT4(1.0f, 0.85f, 0.6f, 1.0f);
-    //centerLight.intensity = 15.0f;
-    //centerLight.range = 15.0f;
-    //AddLight(centerLight);
-
-    ////// Боковые точечные источники для подсветки колонн
-    //Light leftColumn;
-    //leftColumn.type = LightType::Point;
-    //leftColumn.position = XMFLOAT3(-6.0f, 3.0f, -3.0f);
-    //leftColumn.color = XMFLOAT4(0.9f, 0.8f, 0.7f, 1.0f);
-    //leftColumn.intensity = 10.0f;
-    //leftColumn.range = 10.0f;
-    //AddLight(leftColumn);
-
-    //Light rightColumn;
-    //rightColumn.type = LightType::Point;
-    //rightColumn.position = XMFLOAT3(6.0f, 3.0f, 3.0f);
-    //rightColumn.color = XMFLOAT4(0.9f, 0.8f, 0.7f, 1.0f);
-    //rightColumn.intensity = 10.0f;
-    //rightColumn.range = 10.0f;
-    //AddLight(rightColumn);
-
-    //////// Свет сзади для подсветки задней стены
-    //Light backWall;
-    //backWall.type = LightType::Point;
-    //backWall.position = XMFLOAT3(0.0f, 5.0f, -8.0f);
-    //backWall.color = XMFLOAT4(1.0f, 0.85f, 0.7f, 1.0f);
-    //backWall.intensity = 8.0f;
-    //backWall.range = 12.0f;
-    //AddLight(backWall);
-
-    //////// Передний свет для подсветки входа
-    //Light frontLight;
-    //frontLight.type = LightType::Point;
-    //frontLight.position = XMFLOAT3(0.0f, 3.0f, 8.0f);
-    //frontLight.color = XMFLOAT4(0.8f, 0.9f, 1.0f, 1.0f);  // Немного холоднее для контраста
-    //frontLight.intensity = 12.0f;
-    //frontLight.range = 14.0f;
-    //AddLight(frontLight);
-
-    //////// Spot свет сверху - как свет через окно
-    //Light skylight;
-    //skylight.type = LightType::Spot;
-    //skylight.position = XMFLOAT3(0.0f, 10.0f, 0.0f);
-    //skylight.direction = XMFLOAT3(0.0f, -1.0f, 0.1f);
-    //skylight.color = XMFLOAT4(1.0f, 0.95f, 0.85f, 1.0f);
-    //skylight.intensity = 25.0f;
-    //skylight.range = 25.0f;
-    //skylight.spotAngle = 40.0f * XM_PI / 180.0f;
-    //AddLight(skylight);
 
     m_originalIntensities.clear();
     for (const auto& light : m_lights) {
@@ -124,25 +70,10 @@ void RenderingSystem::Initialize(ID3D12Device* device, UINT width, UINT height) 
 void RenderingSystem::SetShadowResources(ID3D12Resource* shadowCB, D3D12_GPU_DESCRIPTOR_HANDLE shadowSRV) {
     m_externalShadowCB = shadowCB;
     m_externalShadowSRV = shadowSRV;
-
-    // Копируем дескриптор SRV тени в наш комбинированный хип (после GBuffer)
-    // Предполагаем, что устройство доступно через контекст или передаем его, 
-    // но так как у нас нет доступа к device здесь, мы должны сделать это при инициализации 
-    // или передать device. Для простоты, предположим, что мы копируем CPU handle, 
-    // но в DX12 лучше копировать дескрипторы через устройство.
-    // В данном случае, так как SRV не меняется, мы можем просто сохранить GPU handle 
-    // и использовать его напрямую, если шейдер позволяет, или обновить хип.
-
-    // Примечание: В текущей архитектуре Lighting PS использует Descriptor Table (root param 0).
-    // Нам нужно убедиться, что SRV тени находится в этом table.
-    // Мы уже зарезервировали место в CreateCombinedSrvHeap.
-    // Здесь мы должны скопировать дескриптор. Так как device нет в аргументах, 
-    // давайте предположим, что мы будем делать это в D3D12App или передадим device.
-    // Для сейчас просто сохраним handles.
 }
 
 void RenderingSystem::CreateCombinedSrvHeap(ID3D12Device* device) {
-    // GBuffer (3) + ShadowMap (1)
+    // GBuffer (4) + ShadowMap (1) = 5
     UINT numDescriptors = GBuffer::GB_COUNT + 1;
     D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
     srvHeapDesc.NumDescriptors = numDescriptors;
@@ -228,6 +159,7 @@ void RenderingSystem::CreateFullscreenQuad(ID3D12Device* device) {
 }
 
 void RenderingSystem::CreateLightingPassPipeline(ID3D12Device* device) {
+    // VS код
     static const char* vsCode = R"(
     struct VSInput {
         float3 position : POSITION;
@@ -245,22 +177,27 @@ void RenderingSystem::CreateLightingPassPipeline(ID3D12Device* device) {
     }
     )";
 
+    // PS код с PBR + IBL
     static const char* psCode = R"(
+        // === G-Buffer текстуры ===
         Texture2D<float4> AlbedoTex : register(t0);
         Texture2D<float4> WorldPosTex : register(t1);
         Texture2D<float4> NormalTex : register(t2);
-        Texture2DArray<float> ShadowMap : register(t3);
-        SamplerState ShadowSampler : register(s0);
+        Texture2D<float4> PBRTex : register(t3);        // metallic (R), roughness (G), ao (B)
 
-        struct LightData {
-            float4 position_type;
-            float4 direction;
-            float4 color_intensity;
-            float4 range_spotAngle;
-        };
+        // === Shadow Map ===
+        Texture2DArray<float> ShadowMap : register(t4);
+        SamplerState ShadowSampler : register(s1);
 
+        // === Константы ===
+        static const float PI = 3.14159265359f;
+
+        // === Константные буферы ===
         cbuffer LightCB : register(b0) {
-            LightData lights[16];
+            float4 lights_pos_type[16];
+            float4 lights_dir[16];
+            float4 lights_col_int[16];
+            float4 lights_range_angle[16];
             uint lightCount;
             float3 padding;
         }
@@ -275,93 +212,191 @@ void RenderingSystem::CreateLightingPassPipeline(ID3D12Device* device) {
             float4 lightPos;
         }
 
+        // === PBR функции ===
+
+        // Distribution GGX (Trowbridge-Reitz)
+        float DistributionGGX(float3 N, float3 H, float roughness)
+        {
+            float a = roughness * roughness;
+            float a2 = a * a;
+            float NdotH = max(dot(N, H), 0.0f);
+            float NdotH2 = NdotH * NdotH;
+            
+            float num = a2;
+            float denom = (NdotH2 * (a2 - 1.0f) + 1.0f);
+            denom = PI * denom * denom;
+            
+            return num / denom;
+        }
+
+        // Geometry Schlick GGX
+        float GeometrySchlickGGX(float NdotV, float roughness)
+        {
+            float r = (roughness + 1.0f);
+            float k = (r * r) / 8.0f;
+            
+            float num = NdotV;
+            float denom = NdotV * (1.0f - k) + k;
+            
+            return num / denom;
+        }
+
+        float GeometrySmith(float3 N, float3 V, float3 L, float roughness)
+        {
+            float NdotV = max(dot(N, V), 0.0f);
+            float NdotL = max(dot(N, L), 0.0f);
+            float ggx2 = GeometrySchlickGGX(NdotV, roughness);
+            float ggx1 = GeometrySchlickGGX(NdotL, roughness);
+            
+            return ggx1 * ggx2;
+        }
+
+        // Fresnel-Schlick
+        float3 FresnelSchlick(float cosTheta, float3 F0)
+        {
+            return F0 + (1.0f - F0) * pow(1.0f - cosTheta, 5.0f);
+        }
+
+        // Cook-Torrance BRDF
+        float3 CookTorranceBRDF(
+            float3 N, float3 V, float3 L,
+            float3 lightColor, float3 albedo,
+            float metallic, float roughness, float ao,
+            float3 F0)
+        {
+            float3 H = normalize(V + L);
+            float NdotL = max(dot(N, L), 0.0f);
+            float NdotV = max(dot(N, V), 0.0f);
+            float HdotV = max(dot(H, V), 0.0f);
+            
+            float3 F0final = lerp(F0, albedo, metallic);
+            
+            float NDF = DistributionGGX(N, H, roughness);
+            float G = GeometrySmith(N, V, L, roughness);
+            float3 F = FresnelSchlick(HdotV, F0final);
+            
+            float3 numerator = NDF * G * F;
+            float denominator = 4.0f * NdotV * NdotL + 0.0001f;
+            float3 specular = numerator / denominator;
+            
+            float3 kS = F;
+            float3 kD = (1.0f - kS) * (1.0f - metallic);
+            
+            float3 diffuse = kD * albedo / PI;
+            
+            return (diffuse + specular) * lightColor * NdotL * ao;
+        }
+
+        // === Функция расчета тени ===
         float CalculateShadow(float3 worldPos, int cascadeIndex) {
             float4 posInLightSpace = mul(float4(worldPos, 1.0), lightViewProj[cascadeIndex]);
             float3 projCoords = posInLightSpace.xyz / posInLightSpace.w;
             projCoords.x = projCoords.x * 0.5 + 0.5;
             projCoords.y = projCoords.y * -0.5 + 0.5;
-    
+        
             if (projCoords.x < 0.0 || projCoords.x > 1.0 || 
                 projCoords.y < 0.0 || projCoords.y > 1.0) {
                 return 1.0;
             }
-    
+        
             float shadowDepth = ShadowMap.Sample(ShadowSampler, float3(projCoords.xy, cascadeIndex));
-    
+        
             float distToLight = length(worldPos - lightPos.xyz);
             float maxDist = 200.0f;
             float normalizedDist = saturate(distToLight / maxDist);
-    
+        
             float bias = shadowBias.x;
             return (normalizedDist - bias) <= shadowDepth ? 1.0 : 0.0;
         }
 
+        // === Основной шейдер ===
         float4 main(float4 position : SV_POSITION) : SV_TARGET {
-            int3 texPos = int3(position.xy, 0);
-            float4 albedo = AlbedoTex.Load(texPos);
-            float4 worldPos = WorldPosTex.Load(texPos);
-            float4 normalData = NormalTex.Load(texPos);
-    
+            int2 texPos = int2(position.xy);
+            
+            // Читаем G-Buffer
+            float4 albedo = AlbedoTex.Load(int3(texPos, 0));
+            float4 worldPos = WorldPosTex.Load(int3(texPos, 0));
+            float4 normalData = NormalTex.Load(int3(texPos, 0));
+            float4 pbrData = PBRTex.Load(int3(texPos, 0));
+            
+            // Пропускаем пустые пиксели
             if (length(worldPos.xyz) < 0.001) {
                 return float4(0.0, 0.0, 0.0, 1.0);
             }
-    
+            
+            // Декодируем данные
             float3 N = normalize(normalData.xyz * 2.0 - 1.0);
             float3 V = normalize(cameraPos.xyz - worldPos.xyz);
-    
-            // Ambient
-            float3 finalColor = albedo.rgb * 0.15;
-    
-            // Выбор каскада и вычисление shadowFactor
+            float3 albedoColor = albedo.rgb;
+            float metallic = pbrData.r;
+            float roughness = pbrData.g;
+            float ao = pbrData.b;
+            
+            // F0 для диэлектриков (по умолчанию 0.04)
+            float3 F0 = float3(0.04, 0.04, 0.04);
+            
+            // Выбор каскада для теней
             float depthFromCam = length(worldPos.xyz - cameraPos.xyz);
             int cascadeIndex = 0;
             if (depthFromCam > cascadeSplits.x) cascadeIndex = 1;
             if (depthFromCam > cascadeSplits.y) cascadeIndex = 2;
             if (depthFromCam > cascadeSplits.z) cascadeIndex = 3;
-
+            
             float shadowFactor = CalculateShadow(worldPos.xyz, cascadeIndex);
-
-            // Цикл по всем источникам света
+            
+            // === Прямой свет ===
+            float3 finalColor = float3(0, 0, 0);
+            
             for (uint i = 0; i < lightCount; i++) {
-                uint type = (uint)lights[i].position_type.w;
+                uint type = (uint)lights_pos_type[i].w;
                 float3 L;
                 float attenuation = 1.0;
                 float spotAtten = 1.0;
-                float3 lightColor = lights[i].color_intensity.rgb * lights[i].color_intensity.a;
-    
-                if (type == 1) { // Directional - применяем тени
-                    L = normalize(-lights[i].direction.xyz);
-                    float diffuse = saturate(dot(N, L));
-                    finalColor += lightColor * diffuse * attenuation * spotAtten * shadowFactor;
+                float3 lightColor = lights_col_int[i].rgb * lights_col_int[i].a;
+                
+                if (type == 1) { // Directional
+                    L = normalize(-lights_dir[i].xyz);
+                    float shadowMult = (i == 0) ? shadowFactor : 1.0f;
+                    float3 brdf = CookTorranceBRDF(N, V, L, lightColor, albedoColor, metallic, roughness, ao, F0);
+                    finalColor += brdf * shadowMult;
                 }
-                else if (type == 0) { // Point - без теней
-                    float3 lightVec = lights[i].position_type.xyz - worldPos.xyz;
+                else if (type == 0) { // Point
+                    float3 lightVec = lights_pos_type[i].xyz - worldPos.xyz;
                     float dist = length(lightVec);
                     L = normalize(lightVec);
-                    attenuation = saturate(1.0 - dist / lights[i].range_spotAngle.x);
+                    attenuation = saturate(1.0 - dist / lights_range_angle[i].x);
                     attenuation *= attenuation;
-                    float diffuse = saturate(dot(N, L));
-                    finalColor += lightColor * diffuse * attenuation * spotAtten;
+                    float3 brdf = CookTorranceBRDF(N, V, L, lightColor, albedoColor, metallic, roughness, ao, F0);
+                    finalColor += brdf * attenuation;
                 }
-                else if (type == 2) { // Spot - без теней
-                    float3 lightVec = lights[i].position_type.xyz - worldPos.xyz;
+                else if (type == 2) { // Spot
+                    float3 lightVec = lights_pos_type[i].xyz - worldPos.xyz;
                     float dist = length(lightVec);
                     L = normalize(lightVec);
-                    attenuation = saturate(1.0 - dist / lights[i].range_spotAngle.x);
+                    attenuation = saturate(1.0 - dist / lights_range_angle[i].x);
                     attenuation *= attenuation;
-                    float spotCos = dot(-L, normalize(lights[i].direction.xyz));
-                    float cutoff = cos(lights[i].range_spotAngle.y);
+                    float spotCos = dot(-L, normalize(lights_dir[i].xyz));
+                    float cutoff = cos(lights_range_angle[i].y);
                     spotAtten = smoothstep(cutoff, cutoff + 0.2, spotCos);
-                    float diffuse = saturate(dot(N, L));
-                    finalColor += lightColor * diffuse * attenuation * spotAtten;
+                    float3 brdf = CookTorranceBRDF(N, V, L, lightColor, albedoColor, metallic, roughness, ao, F0);
+                    finalColor += brdf * attenuation * spotAtten;
                 }
             }
-    
-            finalColor *= albedo.rgb;
+            
+            // === Ambient (простой, без IBL) ===
+            // Пока IBL не реализован, используем простой ambient
+            float3 ambient = albedoColor * 0.03f * ao;
+            finalColor += ambient;
+            
+            // HDR тонмаппинг (Reinhard)
+            finalColor = finalColor / (finalColor + float3(1.0, 1.0, 1.0));
+            
+            // Гамма-коррекция
             finalColor = pow(finalColor, float3(1.0/2.2, 1.0/2.2, 1.0/2.2));
+            
             return float4(finalColor, 1.0);
         }
-        )";
+    )";
 
     ComPtr<ID3DBlob> vsBlob, psBlob, errorBlob;
     HRESULT hr = D3DCompile(vsCode, strlen(vsCode), nullptr, nullptr, nullptr, "main", "vs_5_0", 0, 0, &vsBlob, &errorBlob);
@@ -376,59 +411,65 @@ void RenderingSystem::CreateLightingPassPipeline(ID3D12Device* device) {
     }
 
     // ============================================
-    // КОРНЕВАЯ СИГНАТУРА (без изменений)
+    // КОРНЕВАЯ СИГНАТУРА
     // ============================================
+
+    // Дескрипторы для текстур: Albedo, WorldPos, Normal, PBR, ShadowMap
     D3D12_DESCRIPTOR_RANGE descRange = {};
     descRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    descRange.NumDescriptors = 4;
+    descRange.NumDescriptors = 5; // 4 GBuffer + ShadowMap
     descRange.BaseShaderRegister = 0;
     descRange.RegisterSpace = 0;
     descRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
     D3D12_ROOT_PARAMETER rootParams[3] = {};
+
+    // Root Parameter 0: Дескрипторная таблица (текстуры)
     rootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     rootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     rootParams[0].DescriptorTable.NumDescriptorRanges = 1;
     rootParams[0].DescriptorTable.pDescriptorRanges = &descRange;
 
+    // Root Parameter 1: CBV с данными света
     rootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     rootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     rootParams[1].Descriptor.ShaderRegister = 0;
     rootParams[1].Descriptor.RegisterSpace = 0;
 
+    // Root Parameter 2: CBV с данными теней
     rootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     rootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     rootParams[2].Descriptor.ShaderRegister = 1;
     rootParams[2].Descriptor.RegisterSpace = 0;
 
-    // Обычный сэмплер для чтения (s0)
-    D3D12_STATIC_SAMPLER_DESC regularSampler = {};
-    regularSampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    regularSampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    regularSampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    regularSampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    regularSampler.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
-    regularSampler.ShaderRegister = 0;  // s0
-    regularSampler.RegisterSpace = 0;
-    regularSampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    // Сэмплеры
+    D3D12_STATIC_SAMPLER_DESC samplers[2] = {};
 
-    // Сэмплер сравнения для теней (s1) - пока не используется
-    D3D12_STATIC_SAMPLER_DESC shadowSampler = {};
-    shadowSampler.Filter = D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT;
-    shadowSampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
-    shadowSampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
-    shadowSampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
-    shadowSampler.ComparisonFunc = D3D12_COMPARISON_FUNC_LESS;
-    shadowSampler.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
-    shadowSampler.ShaderRegister = 1;  // s1
-    shadowSampler.RegisterSpace = 0;
-    shadowSampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    // s0 - обычный сэмплер для GBuffer
+    samplers[0].Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
+    samplers[0].AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    samplers[0].AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    samplers[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    samplers[0].ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+    samplers[0].ShaderRegister = 0;
+    samplers[0].RegisterSpace = 0;
+    samplers[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    // s1 - сэмплер для теней (сравнение)
+    samplers[1].Filter = D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT;
+    samplers[1].AddressU = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+    samplers[1].AddressV = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+    samplers[1].AddressW = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+    samplers[1].ComparisonFunc = D3D12_COMPARISON_FUNC_LESS;
+    samplers[1].BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
+    samplers[1].ShaderRegister = 1;
+    samplers[1].RegisterSpace = 0;
+    samplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_ROOT_SIGNATURE_DESC rootSigDesc = {};
     rootSigDesc.NumParameters = 3;
     rootSigDesc.pParameters = rootParams;
-    rootSigDesc.NumStaticSamplers = 1;
-    D3D12_STATIC_SAMPLER_DESC samplers[] = { regularSampler };
+    rootSigDesc.NumStaticSamplers = 2;
     rootSigDesc.pStaticSamplers = samplers;
     rootSigDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
@@ -439,7 +480,6 @@ void RenderingSystem::CreateLightingPassPipeline(ID3D12Device* device) {
     hr = device->CreateRootSignature(0, signature->GetBufferPointer(), signature->GetBufferSize(), IID_PPV_ARGS(&m_lightingRootSig));
     CheckHr(hr, "Failed to create lighting root sig");
 
-    // ... остальной код (Input Layout, PSO) без изменений ...
     D3D12_INPUT_ELEMENT_DESC inputDesc[] = {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
         { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
@@ -480,10 +520,10 @@ void RenderingSystem::Render(ID3D12GraphicsCommandList* cmdList,
 
     // Обновляем данные света
     memset(m_lightCBData, 0, sizeof(LightBufferGPU));
-    LightBufferGPU * lightData = reinterpret_cast<LightBufferGPU*>(m_lightCBData);
+    LightBufferGPU* lightData = reinterpret_cast<LightBufferGPU*>(m_lightCBData);
     lightData->lightCount = std::min((UINT)m_lights.size(), 16u);
     for (UINT i = 0; i < lightData->lightCount; ++i) {
-        const Light & light = m_lights[i];
+        const Light& light = m_lights[i];
         lightData->lights[i].position_type = light.GetAsFloat4();
         lightData->lights[i].direction = light.GetDirectionAsFloat4();
         lightData->lights[i].color_intensity = XMFLOAT4(light.color.x, light.color.y, light.color.z, light.intensity * m_globalIntensity);
@@ -499,7 +539,6 @@ void RenderingSystem::Render(ID3D12GraphicsCommandList* cmdList,
     D3D12_VIEWPORT mainViewport = { 0.0f, 0.0f, (float)viewportWidth, (float)viewportHeight, 0.0f, 1.0f };
     D3D12_RECT mainScissor = { 0, 0, (LONG)viewportWidth, (LONG)viewportHeight };
 
-    // Устанавливаем viewport ОДИН РАЗ для всего метода
     cmdList->RSSetViewports(1, &mainViewport);
     cmdList->RSSetScissorRects(1, &mainScissor);
 
@@ -517,9 +556,11 @@ void RenderingSystem::Render(ID3D12GraphicsCommandList* cmdList,
 
     float albedoClear[] = { 0.0f, 0.0f, 0.0f, 1.0f };
     float dataClear[] = { 0.0f, 0.0f, 0.0f, 1.0f };
+    float pbrClear[] = { 0.0f, 0.5f, 1.0f, 0.0f }; // metallic=0, roughness=0.5, ao=1.0
     cmdList->ClearRenderTargetView(gbufferRTVs[GBuffer::GB_ALBEDO], albedoClear, 0, nullptr);
     cmdList->ClearRenderTargetView(gbufferRTVs[GBuffer::GB_WORLD_POS], dataClear, 0, nullptr);
     cmdList->ClearRenderTargetView(gbufferRTVs[GBuffer::GB_NORMAL], dataClear, 0, nullptr);
+    cmdList->ClearRenderTargetView(gbufferRTVs[GBuffer::GB_PBR], pbrClear, 0, nullptr);
     cmdList->ClearDepthStencilView(dsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
 
     cmdList->SetGraphicsRootConstantBufferView(0, renderData->cbvAddress);
@@ -575,7 +616,6 @@ void RenderingSystem::Render(ID3D12GraphicsCommandList* cmdList,
     // ============================================
     // LIGHTING PASS
     // ============================================
-    // СНОВА УСТАНАВЛИВАЕМ VIEWPORT (на случай, если он сбросился)
     cmdList->RSSetViewports(1, &mainViewport);
     cmdList->RSSetScissorRects(1, &mainScissor);
 
@@ -642,16 +682,12 @@ void RenderingSystem::RenderShadowMapDebug(ID3D12GraphicsCommandList* cmdList,
 
         // PS для визуализации ShadowMap
         static const char* psCode = R"(
-        Texture2DArray<float> ShadowMap : register(t3);
-        SamplerState ShadowSampler : register(s0);
+        Texture2DArray<float> ShadowMap : register(t4);
+        SamplerState ShadowSampler : register(s1);
         
         float4 main(float4 position : SV_POSITION) : SV_TARGET {
-            float2 uv = position.xy / 1920.0; // Используем разрешение экрана
-            
-            // Читаем из теневой карты
+            float2 uv = position.xy / 1920.0;
             float shadowValue = ShadowMap.Sample(ShadowSampler, float3(uv, 0));
-            
-            // Если значение 0 - черный, если 1 - белый
             return float4(shadowValue, shadowValue, shadowValue, 1.0);
         }
         )";
@@ -668,7 +704,7 @@ void RenderingSystem::RenderShadowMapDebug(ID3D12GraphicsCommandList* cmdList,
         D3D12_DESCRIPTOR_RANGE descRange = {};
         descRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
         descRange.NumDescriptors = 1;
-        descRange.BaseShaderRegister = 3; // t3 - ShadowMap
+        descRange.BaseShaderRegister = 4; // t4 - ShadowMap
         descRange.RegisterSpace = 0;
 
         rootParams[0].DescriptorTable.NumDescriptorRanges = 1;
@@ -679,7 +715,7 @@ void RenderingSystem::RenderShadowMapDebug(ID3D12GraphicsCommandList* cmdList,
         sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
         sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
         sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-        sampler.ShaderRegister = 0;
+        sampler.ShaderRegister = 1;
         sampler.RegisterSpace = 0;
         sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
@@ -732,7 +768,7 @@ void RenderingSystem::RenderShadowMapDebug(ID3D12GraphicsCommandList* cmdList,
     cmdList->SetGraphicsRootSignature(debugRootSig.Get());
     cmdList->SetPipelineState(debugPSO.Get());
 
-    // Устанавливаем дескрипторную таблицу (ShadowMap на t3)
+    // Устанавливаем дескрипторную таблицу (ShadowMap на t4)
     D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = m_combinedSrvHeap->GetGPUDescriptorHandleForHeapStart();
     gpuHandle.ptr += GBuffer::GB_COUNT * m_srvDescriptorSize; // Сдвигаем к ShadowMap
     cmdList->SetGraphicsRootDescriptorTable(0, gpuHandle);
@@ -750,29 +786,25 @@ void RenderingSystem::RenderPostProcess(
     UINT targetHeight,
     PostProcessSystem::EffectType effect)
 {
-
     if (effect == PostProcessSystem::EffectType::Off)
     {
-        return;  // Просто выходим, lighting pass уже отрендерил backbuffer
+        return;
     }
 
     if (!m_postProcessSystem)
         return;
 
-    // Get GBuffer textures
     ID3D12Resource* albedo = m_gbuffer->GetResource(GBuffer::GB_ALBEDO);
     ID3D12Resource* worldPos = m_gbuffer->GetResource(GBuffer::GB_WORLD_POS);
     ID3D12Resource* normal = m_gbuffer->GetResource(GBuffer::GB_NORMAL);
 
-    // Set GBuffer resources in post-process system
     m_postProcessSystem->SetGBufferResources(albedo, worldPos, normal);
 
-    // Render post-processing directly to backbuffer with correct size
     m_postProcessSystem->Render(
         cmdList,
         backBufferRTV,
-        targetWidth,    // Реальный размер backbuffer
-        targetHeight,   // Реальный размер backbuffer
+        targetWidth,
+        targetHeight,
         effect
     );
 }

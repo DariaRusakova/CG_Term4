@@ -162,5 +162,13 @@ private:
     D3D12_VIEWPORT m_viewport;
     D3D12_RECT m_scissorRect;
 
+    UINT m_windowWidth = kWidth;
+    UINT m_windowHeight = kHeight;
+
     PostProcessSystem::EffectType m_currentPostProcessEffect = PostProcessSystem::EffectType::Sepia;
+
+    // Индексы IBL текстур в m_textures
+    int m_irradianceTextureIndex = -1;
+    int m_prefilteredTextureIndex = -1;
+    int m_brdfLUTTextureIndex = -1;
 };

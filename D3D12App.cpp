@@ -10,6 +10,7 @@
 #include <fstream>
 #include <stdexcept>
 #include <windows.h>
+
 using namespace DirectX;
 using Microsoft::WRL::ComPtr;
 
@@ -38,8 +39,6 @@ void D3D12App::Shutdown() {
 
     // Освобождаем пост-процессинг систему
     if (m_renderingSystem) {
-        // PostProcessSystem будет уничтожен вместе с RenderingSystem
-        // или можно явно вызвать Release
         m_renderingSystem.reset();
     }
 
@@ -99,12 +98,23 @@ void D3D12App::CreateCommandObjects() {
 }
 
 void D3D12App::CreateSwapChain(HWND hwnd) {
+    // Получаем реальный размер окна
+    RECT clientRect;
+    GetClientRect(hwnd, &clientRect);
+    UINT width = clientRect.right - clientRect.left;
+    UINT height = clientRect.bottom - clientRect.top;
+
+    if (width == 0 || height == 0) {
+        width = kWidth;
+        height = kHeight;
+    }
+
     ComPtr<IDXGIFactory4> factory;
     ThrowIfFailed(CreateDXGIFactory1(IID_PPV_ARGS(&factory)), "CreateDXGIFactory");
     DXGI_SWAP_CHAIN_DESC1 swapChainDesc = {};
     swapChainDesc.BufferCount = kFrameCount;
-    swapChainDesc.Width = kWidth;
-    swapChainDesc.Height = kHeight;
+    swapChainDesc.Width = width;    // Используем реальный размер
+    swapChainDesc.Height = height;  // Используем реальный размер
     swapChainDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     swapChainDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
@@ -131,10 +141,21 @@ void D3D12App::CreateDescriptorHeaps() {
 }
 
 void D3D12App::CreateDepthStencil() {
+    // Получаем реальный размер окна
+    RECT clientRect;
+    GetClientRect(GetActiveWindow(), &clientRect);
+    UINT width = clientRect.right - clientRect.left;
+    UINT height = clientRect.bottom - clientRect.top;
+
+    if (width == 0 || height == 0) {
+        width = kWidth;
+        height = kHeight;
+    }
+
     D3D12_RESOURCE_DESC depthDesc = {};
     depthDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    depthDesc.Width = kWidth;
-    depthDesc.Height = kHeight;
+    depthDesc.Width = width;    // Используем реальный размер
+    depthDesc.Height = height;  // Используем реальный размер
     depthDesc.DepthOrArraySize = 1;
     depthDesc.MipLevels = 1;
     depthDesc.Format = DXGI_FORMAT_D32_FLOAT;
@@ -158,8 +179,11 @@ void D3D12App::CreateDepthStencil() {
 }
 
 void D3D12App::CreateSRVHeap() {
+    // Выделяем дескрипторы для всех текстур модели + IBL текстуры
+    // m_textures содержит все текстуры модели + IBL
+    UINT numDescriptors = (UINT)m_textures.size();
     D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
-    srvHeapDesc.NumDescriptors = (int)m_textures.size();
+    srvHeapDesc.NumDescriptors = numDescriptors;
     srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     ThrowIfFailed(m_device->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&m_srvHeap)));
@@ -170,7 +194,10 @@ void D3D12App::CreateSRVHeap() {
         srvDesc.Format = m_textures[i].format;
         srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
         srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srvDesc.Texture2D.MipLevels = 1;
+        srvDesc.Texture2D.MipLevels = m_textures[i].mipLevels;
+        srvDesc.Texture2D.MostDetailedMip = 0;
+        srvDesc.Texture2D.PlaneSlice = 0;
+        srvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
         m_device->CreateShaderResourceView(m_textures[i].resource.Get(), &srvDesc, srvHandle);
         srvHandle.ptr += m_srvDescriptorSize;
     }
@@ -276,7 +303,6 @@ void D3D12App::CreateConstantBuffers() {
 }
 
 // Создание PSO для рендеринга теней (только глубина)
-
 void D3D12App::CreateShadowPassPipelineState() {
     static const char* shadowVS = R"(
 struct VSInput {
@@ -374,6 +400,17 @@ bool D3D12App::Initialize(HWND hwnd) {
         CreateDescriptorHeaps();
         CreateDepthStencil();
 
+        // Получаем реальный размер окна
+        RECT clientRect;
+        GetClientRect(hwnd, &clientRect);
+        m_windowWidth = clientRect.right - clientRect.left;
+        m_windowHeight = clientRect.bottom - clientRect.top;
+
+        if (m_windowWidth == 0 || m_windowHeight == 0) {
+            m_windowWidth = kWidth;
+            m_windowHeight = kHeight;
+        }
+
         // ================================================
         // 1. ИНИЦИАЛИЗАЦИЯ СИСТЕМЫ ТЕНЕЙ
         // ================================================
@@ -391,12 +428,11 @@ bool D3D12App::Initialize(HWND hwnd) {
         // 3. ИНИЦИАЛИЗАЦИЯ СИСТЕМЫ РЕНДЕРИНГА
         // ================================================
         m_renderingSystem = std::make_unique<RenderingSystem>();
-        RECT clientRect;
+
         GetClientRect(hwnd, &clientRect);
         UINT windowWidth = clientRect.right - clientRect.left;
         UINT windowHeight = clientRect.bottom - clientRect.top;
 
-        // Используем реальный размер для GBuffer
         m_renderingSystem->Initialize(m_device.Get(), windowWidth, windowHeight);
         m_renderingSystem->SetRenderTargetSize(windowWidth, windowHeight);
 
@@ -407,7 +443,7 @@ bool D3D12App::Initialize(HWND hwnd) {
         );
 
         // ================================================
-        // КОПИРОВАНИЕ ДЕСКРИПТОРА ТЕНИ (ИСПРАВЛЕННО)
+        // КОПИРОВАНИЕ ДЕСКРИПТОРА ТЕНИ
         // ================================================
         D3D12_CPU_DESCRIPTOR_HANDLE destCpuHandle = m_renderingSystem->GetCombinedSrvHeap()->GetCPUDescriptorHandleForHeapStart();
         UINT srvDescriptorSize = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
@@ -445,6 +481,7 @@ bool D3D12App::Initialize(HWND hwnd) {
         m_materialStartIndex = model.materialStartIndex;
         m_materialIndexCount = model.materialIndexCount;
 
+        // Загружаем текстуры модели
         m_commandList->Reset(m_commandAllocators[0].Get(), nullptr);
         for (size_t i = 0; i < m_materials.size(); i++) {
             auto& material = m_materials[i];
@@ -457,23 +494,77 @@ bool D3D12App::Initialize(HWND hwnd) {
                 material.textureIndex = -1;
             }
         }
-        if (m_textures.empty()) {
+
+        // ================================================
+        // 6. ЗАГРУЗКА IBL ТЕКСТУР
+        // ================================================
+        // Irradiance карта (64x64)
+        Texture irradiance = TextureLoader::LoadIrradianceMap(
+            m_device.Get(),
+            m_commandList.Get(),
+            "assets/ibl/irradiance.dds"
+        );
+        m_textures.push_back(irradiance);
+        m_irradianceTextureIndex = (int)m_textures.size() - 1;
+
+        // Prefiltered карта с mip-уровнями
+        Texture prefiltered = TextureLoader::LoadPrefilteredMap(
+            m_device.Get(),
+            m_commandList.Get(),
+            "assets/ibl/prefiltered.dds"
+        );
+        m_textures.push_back(prefiltered);
+        m_prefilteredTextureIndex = (int)m_textures.size() - 1;
+
+        // BRDF LUT (512x512 RG format)
+        Texture brdfLUT = TextureLoader::LoadBRDFLUT(
+            m_device.Get(),
+            m_commandList.Get(),
+            "assets/ibl/brdf_lut.dds"
+        );
+        m_textures.push_back(brdfLUT);
+        m_brdfLUTTextureIndex = (int)m_textures.size() - 1;
+
+        OutputDebugStringA("IBL textures loaded successfully\n");
+        OutputDebugStringA(("  Irradiance: index " + std::to_string(m_irradianceTextureIndex) + "\n").c_str());
+        OutputDebugStringA(("  Prefiltered: index " + std::to_string(m_prefilteredTextureIndex) + "\n").c_str());
+        OutputDebugStringA(("  BRDF LUT: index " + std::to_string(m_brdfLUTTextureIndex) + "\n").c_str());
+
+        // Добавляем дефолтную текстуру если нет ни одной
+        if (m_textures.empty() || m_textures.size() == 3) { // только IBL
             Texture defaultTex = TextureLoader::CreateDefaultTexture(m_device.Get(), m_commandList.Get());
-            m_textures.push_back(defaultTex);
-            for (auto& mat : m_materials) mat.textureIndex = 0;
+            // Вставляем дефолтную текстуру в начало
+            m_textures.insert(m_textures.begin(), defaultTex);
+            for (auto& mat : m_materials) {
+                if (mat.textureIndex == -1) {
+                    mat.textureIndex = 0;
+                }
+                else {
+                    // Сдвигаем индексы на 1
+                    mat.textureIndex += 1;
+                }
+            }
+            // Сдвигаем индексы IBL текстур
+            m_irradianceTextureIndex += 1;
+            m_prefilteredTextureIndex += 1;
+            m_brdfLUTTextureIndex += 1;
         }
+
         ThrowIfFailed(m_commandList->Close());
         ID3D12CommandList* lists[] = { m_commandList.Get() };
         m_commandQueue->ExecuteCommandLists(1, lists);
         WaitForGpu();
 
+        // ================================================
+        // 7. СОЗДАНИЕ SRV HEAP И ДЕСКРИПТОРОВ
+        // ================================================
         CreateSRVHeap();
         m_srvDescriptorSize = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
         CreateBuffersFromData();
         CreateConstantBuffers();
 
-        m_viewport = { 0.0f, 0.0f, (float)kWidth, (float)kHeight, 0.0f, 1.0f };
-        m_scissorRect = { 0, 0, (LONG)kWidth, (LONG)kHeight };
+        m_viewport = { 0.0f, 0.0f, (float)m_windowWidth, (float)m_windowHeight, 0.0f, 1.0f };
+        m_scissorRect = { 0, 0, (LONG)m_windowWidth, (LONG)m_windowHeight };
 
         m_currentPostProcessEffect = PostProcessSystem::EffectType::Sepia;
 
@@ -483,6 +574,8 @@ bool D3D12App::Initialize(HWND hwnd) {
         OutputDebugStringA("  2: Sepia\n");
         OutputDebugStringA("  3: Edge Detection\n");
         OutputDebugStringA("  4: Off\n");
+        OutputDebugStringA("  O/P: Increase/Decrease light intensity\n");
+        OutputDebugStringA("  0: Reset light intensity\n");
         return true;
     }
     catch (std::exception& e) {
@@ -498,10 +591,18 @@ void D3D12App::DebugPrintMaterialMapping() {
     char buffer[512];
     OutputDebugStringA("\n=== Material-Texture Mapping ===\n");
     for (size_t i = 0; i < m_materials.size(); i++) {
-        sprintf_s(buffer, "Material[%zu]: '%s' -> Texture[%d]\n",
-            i, m_materials[i].name.c_str(), m_materials[i].textureIndex);
+        sprintf_s(buffer, "Material[%zu]: '%s' -> Texture[%d] (metallic=%.2f, roughness=%.2f)\n",
+            i, m_materials[i].name.c_str(), m_materials[i].textureIndex,
+            m_materials[i].metallic, m_materials[i].roughness);
         OutputDebugStringA(buffer);
     }
+    OutputDebugStringA("\n=== IBL Texture Indices ===\n");
+    sprintf_s(buffer, "Irradiance: %d\n", m_irradianceTextureIndex);
+    OutputDebugStringA(buffer);
+    sprintf_s(buffer, "Prefiltered: %d\n", m_prefilteredTextureIndex);
+    OutputDebugStringA(buffer);
+    sprintf_s(buffer, "BRDF LUT: %d\n", m_brdfLUTTextureIndex);
+    OutputDebugStringA(buffer);
     OutputDebugStringA("\n=== Render Groups ===\n");
     for (size_t i = 0; i < m_materialStartIndex.size(); i++) {
         sprintf_s(buffer, "Group[%zu]: Start=%u, Count=%u\n",
@@ -518,7 +619,7 @@ void D3D12App::UpdateConstantBuffer(uint32_t bufferIndex) {
     m_textureAnimTime += 0.016f;
     m_camera.Update((float)kWidth / kHeight);
 
-    XMMATRIX world = XMMatrixIdentity(); // Убрал вращение для статичной сцены Sponza
+    XMMATRIX world = XMMatrixIdentity();
     XMMATRIX view = m_camera.GetViewMatrix();
     XMMATRIX proj = m_camera.GetProjectionMatrix();
     XMMATRIX wvp = world * view * proj;
@@ -627,20 +728,21 @@ void D3D12App::CreateGeometryPassPipelineState() {
     psoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
     psoDesc.BlendState.RenderTarget[1].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
     psoDesc.BlendState.RenderTarget[2].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    psoDesc.BlendState.RenderTarget[3].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
     psoDesc.SampleMask = UINT_MAX;
     psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    psoDesc.NumRenderTargets = 3;
+    psoDesc.NumRenderTargets = 4;  // 4 RTV для GBuffer
     psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
     psoDesc.RTVFormats[1] = DXGI_FORMAT_R32G32B32A32_FLOAT;
     psoDesc.RTVFormats[2] = DXGI_FORMAT_R32G32B32A32_FLOAT;
+    psoDesc.RTVFormats[3] = DXGI_FORMAT_R8G8B8A8_UNORM;  // PBR
     psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
     psoDesc.SampleDesc.Count = 1;
     hr = m_device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_geometryPSO));
     ThrowIfFailed(hr, "Create geometry PSO");
 }
 
-// D3D12App.cpp - исправленный RenderShadowMapPass:
-
+// D3D12App.cpp - RenderShadowMapPass
 void D3D12App::RenderShadowMapPass(ID3D12GraphicsCommandList* cmdList) {
     if (!m_shadowMapSystem || !m_shadowPSO || !m_shadowRootSig) {
         OutputDebugStringA("WARNING: ShadowMapSystem, PSO or RootSig is null!\n");
@@ -721,9 +823,7 @@ void D3D12App::RenderShadowMapPass(ID3D12GraphicsCommandList* cmdList) {
 
     cmdList->SetGraphicsRootConstantBufferView(0, m_shadowMapSystem->GetConstantBuffer()->GetGPUVirtualAddress());
 
-    // ============================================
-    // РЕНДЕРИМ ВСЕ КАСКАДЫ
-    // ============================================
+    // Рендерим все каскады
     for (int cascade = 0; cascade < ShadowMapSystem::CASCADE_COUNT; ++cascade) {
         D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = m_shadowMapSystem->GetDSVForCascade(cascade);
         if (dsvHandle.ptr == 0) {
@@ -767,9 +867,8 @@ void D3D12App::RenderFrame() {
         UINT backbufferWidth = (UINT)backbufferDesc.Width;
         UINT backbufferHeight = (UINT)backbufferDesc.Height;
 
-        // Устанавливаем viewport на размер backbuffer
-        m_viewport = { 0.0f, 0.0f, (float)backbufferWidth, (float)backbufferHeight, 0.0f, 1.0f };
-        m_scissorRect = { 0, 0, (LONG)backbufferWidth, (LONG)backbufferHeight };
+        m_viewport = { 0.0f, 0.0f, (float)m_windowWidth, (float)m_windowHeight, 0.0f, 1.0f };
+        m_scissorRect = { 0, 0, (LONG)m_windowWidth, (LONG)m_windowHeight };
 
         // ================================================
         // ПЕРЕХОД BACKBUFFER В RENDER_TARGET
@@ -795,7 +894,6 @@ void D3D12App::RenderFrame() {
         // ================================================
         // 2. GEOMETRY + LIGHTING PASS
         // ================================================
-        // Устанавливаем viewport для GEOMETRY + LIGHTING PASS
         m_commandList->RSSetViewports(1, &m_viewport);
         m_commandList->RSSetScissorRects(1, &m_scissorRect);
 
@@ -815,11 +913,8 @@ void D3D12App::RenderFrame() {
         renderData.materials = m_materials.data();
 
         m_renderingSystem->SetGlobalIntensity(m_lightIntensity);
-
-        // IMPORTANT: Передаем РЕАЛЬНЫЙ размер backbuffer в RenderingSystem
         m_renderingSystem->SetRenderTargetSize(backbufferWidth, backbufferHeight);
 
-        // Lighting pass рендерит в backbuffer
         m_renderingSystem->Render(
             m_commandList.Get(),
             m_depthStencil.Get(),
@@ -833,7 +928,6 @@ void D3D12App::RenderFrame() {
         // ================================================
         // 3. POST-PROCESSING PASS
         // ================================================
-        // Устанавливаем viewport для POST-PROCESSING (такой же)
         m_commandList->RSSetViewports(1, &m_viewport);
         m_commandList->RSSetScissorRects(1, &m_scissorRect);
 
@@ -918,8 +1012,6 @@ void D3D12App::OnMouseMove(int x, int y) {
     }
 }
 
-// В методе D3D12App::OnKeyDown добавьте следующие case'ы:
-
 void D3D12App::OnKeyDown(WPARAM wParam) {
     switch (wParam) {
     case 'W':
@@ -963,9 +1055,6 @@ void D3D12App::OnKeyDown(WPARAM wParam) {
         OutputDebugStringA("Light Intensity Reset to 1.0\n");
         break;
 
-        // ================================================
-        // НОВЫЕ КЛАВИШИ ДЛЯ POST-PROCESSING
-        // ================================================
     case '1':  // ReadGBuffer (debug)
         m_currentPostProcessEffect = PostProcessSystem::EffectType::ReadGBuffer;
         OutputDebugStringA("Post-Process: ReadGBuffer (Debug)\n");

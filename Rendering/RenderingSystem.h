@@ -32,7 +32,6 @@ public:
     void Initialize(ID3D12Device* device, UINT width, UINT height);
     void Resize(UINT width, UINT height);
 
-    // Новый метод для передачи ресурсов тени извне
     void SetShadowResources(ID3D12Resource* shadowCB, D3D12_GPU_DESCRIPTOR_HANDLE shadowSRV);
 
     void Render(ID3D12GraphicsCommandList* cmdList,
@@ -104,7 +103,6 @@ private:
     std::unique_ptr<GBuffer> m_gbuffer;
     std::vector<Light> m_lights;
 
-    // Внешние ресурсы тени
     ID3D12Resource* m_externalShadowCB = nullptr;
     D3D12_GPU_DESCRIPTOR_HANDLE m_externalShadowSRV;
 
@@ -124,7 +122,6 @@ private:
         UINT lightCount;
         float padding[3];
     };
-
 
     std::unique_ptr<PostProcessSystem> m_postProcessSystem;
 
