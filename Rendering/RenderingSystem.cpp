@@ -409,12 +409,12 @@ void RenderingSystem::Render(
     if (renderData->useTessellation && renderData->tessellationPSO && renderData->tessellationRootSig) {
         activePSO = renderData->tessellationPSO;
         activeRootSig = renderData->tessellationRootSig;
-        //OutputDebugStringA("Using tessellation pipeline\n");
+        OutputDebugStringA("Using tessellation pipeline\n");
     }
     else {
         activePSO = geometryPSO;
         activeRootSig = geometryRootSig;
-        //OutputDebugStringA("Using standard geometry pipeline\n");
+        OutputDebugStringA("Using standard geometry pipeline\n");
     }
 
     // ВАЖНО: Устанавливаем корневую подпись ДО всего остального
@@ -451,7 +451,7 @@ void RenderingSystem::Render(
     D3D12_VERTEX_BUFFER_VIEW vbv = {};
     vbv.BufferLocation = renderData->vertexBuffer->GetGPUVirtualAddress();
     vbv.StrideInBytes = sizeof(Vertex);
-    vbv.SizeInBytes = sizeof(Vertex) * renderData->indexCount * 3; // Максимальный размер
+    vbv.SizeInBytes = sizeof(Vertex) * renderData->indexCount;
 
     D3D12_INDEX_BUFFER_VIEW ibv = {};
     ibv.BufferLocation = renderData->indexBuffer->GetGPUVirtualAddress();
@@ -463,6 +463,7 @@ void RenderingSystem::Render(
 
     // ВАЖНО: Устанавливаем примитивную топологию
     if (renderData->useTessellation) {
+        OutputDebugStringA("=== Tessellation Visualization D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST ===\n");
         cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST);
     }
     else {
@@ -494,6 +495,11 @@ void RenderingSystem::Render(
                         static_cast<UINT64>(renderData->materials[i].textureIndex) * renderData->srvDescriptorSize;
                     cmdList->SetGraphicsRootDescriptorTable(2, texHandle);
                 }
+
+                char buf[256];
+                sprintf_s(buf, "Draw: PSO=%p, RootSig=%p, Topology=%d\n",
+                    activePSO, activeRootSig, (int)renderData->useTessellation);
+                OutputDebugStringA(buf);
 
                 // Отрисовываем группу
                 cmdList->DrawIndexedInstanced(

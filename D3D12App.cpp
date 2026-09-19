@@ -505,7 +505,8 @@ bool D3D12App::Initialize(HWND hwnd) {
             if (hasData) {
                 TessellationConstantBuffer* cb = (TessellationConstantBuffer*)m_tessCBData[i];
                 sprintf_s(buffer, "  Data: minTessDist=%.1f maxTessDist=%.1f minTess=%.1f maxTess=%.1f\n",
-                    cb->minTessDist, cb->maxTessDist, cb->minTessLevel, cb->maxTessLevel);
+                    cb->tessParams.x, cb->tessParams.y,
+                    cb->tessParams.z, cb->tessParams.w);
                 OutputDebugStringA(buffer);
             }
         }
@@ -815,7 +816,9 @@ void D3D12App::CreateGeometryPassPipelineState() {
     D3D12_INPUT_ELEMENT_DESC inputDesc[] = {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
         { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TANGENT", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 32, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "BITANGENT", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 44, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 } // Добавлено!
     };
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
@@ -928,46 +931,6 @@ void D3D12App::RenderFrame() {
         //    renderData.tessCBVAddress);
         //OutputDebugStringA(buffer);
 
-        if (m_useTessellation) {
-            TessellationConstantBuffer* cbData = static_cast<TessellationConstantBuffer*>(m_tessCBData[m_frameIndex]);
-            if (cbData) {
-                //char debugBuffer[256];
-                //sprintf_s(debugBuffer, "Tess CB: minDist=%.2f maxDist=%.2f minTess=%.2f maxTess=%.2f\n",
-                //    cbData->minTessDist, cbData->maxTessDist,
-                //    cbData->minTessLevel, cbData->maxTessLevel);
-                //OutputDebugStringA(debugBuffer);
-
-                // Проверка на валидность параметров
-                if (cbData->minTessDist >= cbData->maxTessDist) {
-                    OutputDebugStringA("ERROR: minTessDist >= maxTessDist. Fixing...\n");
-                    cbData->minTessDist = 5.0f;
-                    cbData->maxTessDist = 100.0f;
-                }
-                if (cbData->minTessLevel < 1.0f) {
-                    OutputDebugStringA("ERROR: minTessLevel < 1.0. Fixing...\n");
-                    cbData->minTessLevel = 1.0f;
-                }
-                if (cbData->maxTessLevel < 1.0f) {
-                    OutputDebugStringA("ERROR: maxTessLevel < 1.0. Fixing...\n");
-                    cbData->maxTessLevel = 16.0f;
-                }
-            }
-            else {
-                OutputDebugStringA("ERROR: Tessellation CB data is null!\n");
-            }
-        }
-
-
-        // Вызываем deferred rendering с поддержкой тесселяции
-        m_renderingSystem->Render(
-            m_commandList.Get(),
-            m_depthStencil.Get(),
-            dsvHandle,
-            rtvHandle,
-            m_geometryRootSig.Get(),
-            m_geometryPSO.Get(),
-            &renderData
-        );
 
         // Новые параметры для тесселяции
         renderData.useTessellation = m_useTessellation;
@@ -1006,48 +969,67 @@ void D3D12App::RenderFrame() {
     }
 }
 
-// Новая функция для обновления константного буфера тесселяции
 void D3D12App::UpdateTessellationConstantBuffer(uint32_t bufferIndex) {
     if (bufferIndex >= m_tessCBData.size() || !m_tessCBData[bufferIndex]) {
+        char buf[256];
+        sprintf_s(buf, "UpdateTessCB: EARLY RETURN! bufferIndex=%u, size=%zu, data=%p\n",
+            bufferIndex, m_tessCBData.size(),
+            bufferIndex < m_tessCBData.size() ? m_tessCBData[bufferIndex] : nullptr);
+        OutputDebugStringA(buf);
         return;
     }
 
     TessellationConstantBuffer* cbData = (TessellationConstantBuffer*)m_tessCBData[bufferIndex];
     if (!cbData) return;
 
-    // Получаем матрицы
+    // ---- Матрицы ----
     XMMATRIX view = m_camera.GetViewMatrix();
     XMMATRIX proj = m_camera.GetProjectionMatrix();
     XMFLOAT3 cameraPos = m_camera.GetPosition();
 
-    // Заполняем ВСЕ поля структуры
     XMStoreFloat4x4(&cbData->viewMatrix, XMMatrixTranspose(view));
     XMStoreFloat4x4(&cbData->projMatrix, XMMatrixTranspose(proj));
     cbData->cameraPos = XMFLOAT4(cameraPos.x, cameraPos.y, cameraPos.z, 1.0f);
 
-    // Для небольшой модели настройте так:
-    //cbData->minTessDist = 2.0f;      // Начинаем макс. тесселяцию очень близко
-    //cbData->maxTessDist = 30.0f;     // Заканчиваем мин. тесселяцию недалеко
-    //cbData->minTessLevel = 1.0f;     // Минимум = 1 (почти нет тесселяции)
-    //cbData->maxTessLevel = 64.0f;    // Максимум = 64 (сильная тесселяция)
+    // ---- Параметры LOD ----
+    cbData->tessParams = XMFLOAT4(
+        m_tessMinDist,
+        m_tessMaxDist,
+        m_tessMinLevel,
+        m_tessMaxLevel
+    );
 
-    // Для большой модели:
-    // cbData->minTessDist = 10.0f;
-    // cbData->maxTessDist = 200.0f;
-    // cbData->minTessLevel = 2.0f;
-    // cbData->maxTessLevel = 64.0f;
+    // ---- Флаги визуализации ----
+    cbData->visualParams = XMFLOAT4(
+        m_showTessVisualization ? 1.0f : 0.0f,                      // x
+        m_useNormalMap ? 1.0f : 0.0f,                      // y
+        1.0f,                                                        // z = normalStrength
+        (m_showTessVisualization && m_showWireframe) ? 1.0f : 0.0f  // w
+    );
 
-    cbData->minTessDist = m_tessMinDist;
-    cbData->maxTessDist = m_tessMaxDist;
-    cbData->minTessLevel = m_tessMinLevel;
-    cbData->maxTessLevel = m_tessMaxLevel;
+    // ---- Стиль визуализации ----
+    cbData->visualParams2 = XMFLOAT4(
+        m_lineWidth,                                                  // x
+        (float)m_colorMode,                                           // y
+        (m_showTessVisualization && m_showScaleBar) ? 1.0f : 0.0f,    // z
+        220.0f                                                        // w = scaleBarWidth
+    );
 
-    cbData->showVisualization = m_showTessVisualization ? 1 : 0;
-    cbData->padding = 0.0f;
-    cbData->useNormalMap = m_useNormalMap ? 1 : 0;
-    cbData->normalStrength = 1.0f;
-    cbData->padding2[0] = 0.0f;
-    cbData->padding2[1] = 0.0f;
+    // ---- Масштабная линейка ----
+    cbData->visualParams3 = XMFLOAT4(
+        28.0f,            // x = scaleBarHeight
+        20.0f,            // y = scaleBarMargin
+        m_tessMaxLevel,   // z = tessLevelMaxRef
+        0.0f              // w = padding
+    );
+
+    char buf[256];
+    sprintf_s(buf, "UpdateTessCB: minD=%.1f maxD=%.1f minLvl=%.1f maxLvl=%.1f showVis=%.1f\n",
+        cbData->tessParams.x, cbData->tessParams.y,
+        cbData->tessParams.z, cbData->tessParams.w,
+        cbData->visualParams.x);
+    OutputDebugStringA(buf);
+
 }
 
 
@@ -1153,7 +1135,6 @@ void D3D12App::OnKeyDown(WPARAM wParam) {
         if (m_showTessVisualization) {
             OutputDebugStringA("=== Tessellation Visualization ON ===\n");
 
-            // Выводим текущие параметры
             if (m_frameIndex < m_tessCBData.size() && m_tessCBData[m_frameIndex]) {
                 TessellationConstantBuffer* cb = (TessellationConstantBuffer*)m_tessCBData[m_frameIndex];
                 char buf[512];
@@ -1164,16 +1145,61 @@ void D3D12App::OnKeyDown(WPARAM wParam) {
                     "  maxTessDist: %.1f\n"
                     "  minTessLevel: %.1f\n"
                     "  maxTessLevel: %.1f\n"
-                    "  showVis: %d\n",
+                    "  showVis: %.1f\n",
                     cb->cameraPos.x, cb->cameraPos.y, cb->cameraPos.z,
-                    cb->minTessDist, cb->maxTessDist,
-                    cb->minTessLevel, cb->maxTessLevel,
-                    cb->showVisualization);
+                    cb->tessParams.x, cb->tessParams.y,
+                    cb->tessParams.z, cb->tessParams.w,
+                    cb->visualParams.x);
                 OutputDebugStringA(buf);
             }
         }
         else {
             OutputDebugStringA("=== Tessellation Visualization OFF ===\n");
+        }
+        break;
+    case 'B':  // Wireframe on/off
+        m_showWireframe = !m_showWireframe;
+        {
+            char b[128];
+            sprintf_s(b, "Wireframe: %s\n", m_showWireframe ? "ON" : "OFF");
+            OutputDebugStringA(b);
+        }
+        break;
+
+    case 'M':  // Режим раскраски
+        m_colorMode = (m_colorMode + 1) % 3;
+        {
+            const char* names[3] = { "tessLevel", "distance", "patchHash" };
+            char b[128];
+            sprintf_s(b, "Color mode: %s\n", names[m_colorMode]);
+            OutputDebugStringA(b);
+        }
+        break;
+
+    case 'L':  // Масштабная линейка
+        m_showScaleBar = !m_showScaleBar;
+        {
+            char b[128];
+            sprintf_s(b, "Scale bar: %s\n", m_showScaleBar ? "ON" : "OFF");
+            OutputDebugStringA(b);
+        }
+        break;
+
+    case VK_OEM_4: // '[' — тоньше
+        m_lineWidth = std::max(0.5f, m_lineWidth - 0.25f);
+        {
+            char b[128];
+            sprintf_s(b, "Line width: %.2f\n", m_lineWidth);
+            OutputDebugStringA(b);
+        }
+        break;
+
+    case VK_OEM_6: // ']' — толще
+        m_lineWidth = std::min(6.0f, m_lineWidth + 0.25f);
+        {
+            char b[128];
+            sprintf_s(b, "Line width: %.2f\n", m_lineWidth);
+            OutputDebugStringA(b);
         }
         break;
     }
@@ -1338,80 +1364,78 @@ void D3D12App::CreateTessellationPipeline() {
 
     // Hull Shader (динамический LOD)
     static const char* tessHS = R"(
-    struct HS_INPUT {
-        float3 position : POSITION;
-        float3 normal   : NORMAL;
-        float2 texcoord : TEXCOORD;
-        float3 tangent  : TANGENT;
-    };
-    
-    struct HS_CONSTANT_OUTPUT {
-        float edges[3]  : SV_TessFactor;
-        float inside    : SV_InsideTessFactor;
-        float tessLevel : TESSLEVEL;  // <-- НОВОЕ ПОЛЕ
-    };
-    
-    struct HS_OUTPUT {
-        float3 position : POSITION;
-        float3 normal   : NORMAL;
-        float2 texcoord : TEXCOORD;
-        float3 tangent  : TANGENT;
-    };
-    
-    cbuffer TessellationParams : register(b1) {
-        float4x4 viewMatrix;
-        float4x4 projMatrix;
-        float4 cameraPos;
-        float minTessDist;
-        float maxTessDist;
-        float minTessLevel;
-        float maxTessLevel;
-    }
-    
-    [domain("tri")]
-    [partitioning("integer")]
-    [outputtopology("triangle_cw")]
-    [outputcontrolpoints(3)]
-    [patchconstantfunc("PatchConstantFunc")]
-    HS_OUTPUT main(InputPatch<HS_INPUT, 3> patch, uint id : SV_OutputControlPointID) {
-        HS_OUTPUT output;
-        output.position = patch[id].position;
-        output.normal = patch[id].normal;
-        output.texcoord = patch[id].texcoord;
-        output.tangent = patch[id].tangent;
-        return output;
-    }
-    
+struct HS_INPUT {
+    float3 position : POSITION;
+    float3 normal   : NORMAL;
+    float2 texcoord : TEXCOORD;
+    float3 tangent  : TANGENT;
+};
+
+struct HS_CONSTANT_OUTPUT {
+    float edges[3]  : SV_TessFactor;
+    float inside    : SV_InsideTessFactor;
+    float tessLevel : TESSLEVEL;
+    float patchId   : PATCHID;
+};
+
+struct HS_OUTPUT {
+    float3 position : POSITION;
+    float3 normal   : NORMAL;
+    float2 texcoord : TEXCOORD;
+    float3 tangent  : TANGENT;
+    float  patchId  : PATCHID;
+};
+
+cbuffer TessellationParams : register(b1) {
+    float4x4 viewMatrix;
+    float4x4 projMatrix;
+    float4   cameraPos;
+    float4   tessParams;    // x=minDist, y=maxDist, z=minLevel, w=maxLevel
+    float4   visualParams;  // x=showVis, y=useNormalMap, z=normalStrength, w=showWireframe
+    float4   visualParams2; // x=lineWidth, y=colorMode, z=showScaleBar, w=scaleBarWidth
+    float4   visualParams3; // x=scaleBarHeight, y=scaleBarMargin, z=tessLevelMaxRef, w=padding
+};
+
+[domain("tri")]
+[partitioning("fractional_even")]
+[outputtopology("triangle_cw")]
+[outputcontrolpoints(3)]
+[patchconstantfunc("PatchConstantFunc")]
+HS_OUTPUT main(InputPatch<HS_INPUT, 3> patch, uint id : SV_OutputControlPointID) {
+    HS_OUTPUT o;
+    o.position = patch[id].position;
+    o.normal   = patch[id].normal;
+    o.texcoord = patch[id].texcoord;
+    o.tangent  = patch[id].tangent;
+    o.patchId  = 0.0; // заполним в domain через patchID? — см. ниже
+    return o;
+}
+
 HS_CONSTANT_OUTPUT PatchConstantFunc(InputPatch<HS_INPUT, 3> patch, uint patchID : SV_PrimitiveID) {
-    HS_CONSTANT_OUTPUT output;
+    HS_CONSTANT_OUTPUT o;
     
-    // Вычисляем центр патча в world space
-    float3 center = (patch[0].position + patch[1].position + patch[2].position) / 3.0;
+    float minTessDist  = tessParams.x;
+    float maxTessDist  = tessParams.y;
+    float minTessLevel = tessParams.z;
+    float maxTessLevel = tessParams.w;
     
-    // Вычисляем расстояние от камеры до центра патча
-    float3 toCamera = cameraPos.xyz - center;
-    float distance = length(toCamera);
+    float3 center = (patch[0].position + patch[1].position + patch[2].position) / 3.0f;
+    float dist = length(cameraPos.xyz - center);
     
-    // ОТЛАДКА: проверяем расстояние в консоли не можем, 
-    // но можем увидеть эффект по цветам
+    float range = max(0.0001f, maxTessDist - minTessDist);
+    float t = saturate((dist - minTessDist) / range);
+    float tessLevel = lerp(maxTessLevel, minTessLevel, t);
+    tessLevel = max(1.0f, tessLevel);
     
-    // Нормализуем расстояние
-    float normalizedDist = saturate((distance - minTessDist) / (maxTessDist - minTessDist));
-    
-    // Вычисляем уровень тесселяции (ближе = больше)
-    float tessLevel = lerp(maxTessLevel, minTessLevel, normalizedDist);
-    tessLevel = max(1.0, tessLevel);
-    
-    // Применяем ко всем рёбрам и центру
-    output.edges[0] = tessLevel;
-    output.edges[1] = tessLevel;
-    output.edges[2] = tessLevel;
-    output.inside = tessLevel;
-    
-    // СОХРАНЯЕМ УРОВЕНЬ ТЕССЕЛЯЦИИ ДЛЯ ВИЗУАЛИЗАЦИИ
-    output.tessLevel = tessLevel;
-    
-    return output;
+    //tessLevel  = 16.0;
+
+    o.edges[0] = tessLevel;
+    o.edges[1] = tessLevel;
+    o.edges[2] = tessLevel;
+    o.inside   = tessLevel;
+    o.tessLevel = tessLevel;
+    o.patchId   = (float)patchID;
+    return o;
 }
 )";
 
@@ -1425,77 +1449,84 @@ HS_CONSTANT_OUTPUT PatchConstantFunc(InputPatch<HS_INPUT, 3> patch, uint patchID
 
     // Domain Shader
     static const char* tessDS = R"(
-    struct HS_CONSTANT_OUTPUT {
-        float edges[3]  : SV_TessFactor;
-        float inside    : SV_InsideTessFactor;
-        float tessLevel : TESSLEVEL;  // <-- Добавили это поле
-    };
-    
-    struct HS_OUTPUT {
-        float3 position : POSITION;
-        float3 normal   : NORMAL;
-        float2 texcoord : TEXCOORD;
-        float3 tangent  : TANGENT;
-    };
-    
-    struct DS_OUTPUT {
-        float4 position : SV_POSITION;
-        float3 worldPos : WORLDPOS;
-        float3 normal   : NORMAL;
-        float2 texcoord : TEXCOORD;
-        float3 tangent  : TANGENT;
-        float3 bitangent : BITANGENT;
-        float tessLevel : TESSLEVEL;  // <-- НОВОЕ ПОЛЕ для передачи в PS
-    };
-    
-    cbuffer SceneConstant : register(b0) {
-        float4x4 worldViewProj;
-        float4x4 world;
-        float4 lightPos;
-        float4 lightColor;
-        float4 cameraPos;
-        float4 materialAmbient;
-        float4 materialDiffuse;
-        float4 materialSpecular;
-        float materialShininess;
-        float2 textureScale;
-        float2 textureOffset;
-    }
-    
-    [domain("tri")]
-    DS_OUTPUT main(HS_CONSTANT_OUTPUT input, 
-                   const OutputPatch<HS_OUTPUT, 3> patch,
-                   float3 barycentric : SV_DomainLocation) {
-        DS_OUTPUT output;
-        
-        float3 position = patch[0].position * barycentric.x + 
-                          patch[1].position * barycentric.y + 
-                          patch[2].position * barycentric.z;
-        
-        float3 normal = normalize(patch[0].normal * barycentric.x + 
-                                 patch[1].normal * barycentric.y + 
-                                 patch[2].normal * barycentric.z);
-        
-        float2 texcoord = patch[0].texcoord * barycentric.x + 
-                          patch[1].texcoord * barycentric.y + 
-                          patch[2].texcoord * barycentric.z;
-        
-        float3 tangent = normalize(patch[0].tangent * barycentric.x + 
-                                  patch[1].tangent * barycentric.y + 
-                                  patch[2].tangent * barycentric.z);
-        
-        output.position = mul(float4(position, 1.0), worldViewProj);
-        output.worldPos = mul(float4(position, 1.0), world).xyz;
-        output.normal = normalize(mul(float4(normal, 0.0), world).xyz);
-        output.texcoord = texcoord;
-        output.tangent = normalize(mul(float4(tangent, 0.0), world).xyz);
-        output.bitangent = cross(output.normal, output.tangent);
-        
-        // ПЕРЕДАЁМ УРОВЕНЬ ТЕССЕЛЯЦИИ В PS
-        output.tessLevel = input.tessLevel;  // <-- НОВАЯ СТРОКА
-        
-        return output;
-    }
+struct HS_CONSTANT_OUTPUT {
+    float edges[3]  : SV_TessFactor;
+    float inside    : SV_InsideTessFactor;
+    float tessLevel : TESSLEVEL;
+    float patchId   : PATCHID;
+};
+
+struct HS_OUTPUT {
+    float3 position : POSITION;
+    float3 normal   : NORMAL;
+    float2 texcoord : TEXCOORD;
+    float3 tangent  : TANGENT;
+    float  patchId  : PATCHID;
+};
+
+struct DS_OUTPUT {
+    float4 position  : SV_POSITION;
+    float3 worldPos  : WORLDPOS;
+    float3 normal    : NORMAL;
+    float2 texcoord  : TEXCOORD;
+    float3 tangent   : TANGENT;
+    float3 bitangent : BITANGENT;
+    float  tessLevel : TESSLEVEL;
+    float  patchId   : PATCHID;
+    float3 bary      : BARYCENTRIC;
+    float  camDist   : CAMDIST;
+};
+
+cbuffer SceneConstant : register(b0) {
+    float4x4 worldViewProj;
+    float4x4 world;
+    float4 lightPos;
+    float4 lightColor;
+    float4 cameraPos;
+    float4 materialAmbient;
+    float4 materialDiffuse;
+    float4 materialSpecular;
+    float materialShininess;
+    float2 textureScale;
+    float2 textureOffset;
+}
+
+[domain("tri")]
+DS_OUTPUT main(HS_CONSTANT_OUTPUT input,
+               const OutputPatch<HS_OUTPUT, 3> patch,
+               float3 barycentric : SV_DomainLocation) {
+    DS_OUTPUT o;
+
+    float3 position = patch[0].position * barycentric.x +
+                      patch[1].position * barycentric.y +
+                      patch[2].position * barycentric.z;
+
+    float3 normal = normalize(patch[0].normal * barycentric.x +
+                              patch[1].normal * barycentric.y +
+                              patch[2].normal * barycentric.z);
+
+    float2 texcoord = patch[0].texcoord * barycentric.x +
+                      patch[1].texcoord * barycentric.y +
+                      patch[2].texcoord * barycentric.z;
+
+    float3 tangent = normalize(patch[0].tangent * barycentric.x +
+                               patch[1].tangent * barycentric.y +
+                               patch[2].tangent * barycentric.z);
+
+    float3 worldPos = mul(float4(position, 1.0), world).xyz;
+
+    o.position   = mul(float4(position, 1.0), worldViewProj);
+    o.worldPos   = worldPos;
+    o.normal     = normalize(mul(float4(normal, 0.0), world).xyz);
+    o.texcoord   = texcoord;
+    o.tangent    = normalize(mul(float4(tangent, 0.0), world).xyz);
+    o.bitangent  = cross(o.normal, o.tangent);
+    o.tessLevel  = input.tessLevel;
+    o.patchId    = input.patchId;
+    o.bary       = barycentric;
+    o.camDist    = length(cameraPos.xyz - worldPos);
+    return o;
+}
 )";
 
     hr = D3DCompile(tessDS, strlen(tessDS), nullptr, nullptr, nullptr,
@@ -1508,106 +1539,239 @@ HS_CONSTANT_OUTPUT PatchConstantFunc(InputPatch<HS_INPUT, 3> patch, uint patchID
 
     // Pixel Shader
     static const char* geometryPS = R"(
-    struct PS_INPUT {
-        float4 position : SV_POSITION;
-        float3 worldPos : WORLDPOS;
-        float3 normal   : NORMAL;
-        float2 texcoord : TEXCOORD;
-        float3 tangent  : TANGENT;
-        float3 bitangent : BITANGENT;
-        float tessLevel : TESSLEVEL;
-    };
-    
-    struct PS_OUTPUT {
-        float4 albedo   : SV_Target0;
-        float4 worldPos : SV_Target1;
-        float4 normal   : SV_Target2;
-    };
+struct PS_INPUT {
+    float4 position  : SV_POSITION;
+    float3 worldPos  : WORLDPOS;
+    float3 normal    : NORMAL;
+    float2 texcoord  : TEXCOORD;
+    float3 tangent   : TANGENT;
+    float3 bitangent : BITANGENT;
+    float  tessLevel : TESSLEVEL;
+    float  patchId   : PATCHID;
+    float3 bary      : BARYCENTRIC;
+    float  camDist   : CAMDIST;
+};
 
-    cbuffer TessellationParams : register(b1) {
-        float4x4 viewMatrix;
-        float4x4 projMatrix;
-        float4 cameraPos;
-        float minTessDist;
-        float maxTessDist;
-        float minTessLevel;
-        float maxTessLevel;
-        int showVisualization;
-        float padding;
-        int useNormalMap;       // Флаг использования карты нормалей
-        float normalStrength;    // Сила normal mapping (обычно 1.0)
+struct PS_OUTPUT {
+    float4 albedo   : SV_Target0;
+    float4 worldPos : SV_Target1;
+    float4 normal   : SV_Target2;
+};
+
+cbuffer TessellationParams : register(b1) {
+    float4x4 viewMatrix;
+    float4x4 projMatrix;
+    float4   cameraPos;
+    float4   tessParams;    // x=minDist, y=maxDist, z=minLevel, w=maxLevel
+    float4   visualParams;  // x=showVis, y=useNormalMap, z=normalStrength, w=showWireframe
+    float4   visualParams2; // x=lineWidth, y=colorMode, z=showScaleBar, w=scaleBarWidth
+    float4   visualParams3; // x=scaleBarHeight, y=scaleBarMargin, z=tessLevelMaxRef, w=padding
+};
+
+Texture2D diffuseTexture   : register(t0);
+Texture2D normalMap        : register(t1);
+Texture2D displacementMap  : register(t2);
+SamplerState textureSampler : register(s0);
+
+// Палитра для 7 дискретных уровней (1,2,4,8,16,32,64)
+static const float3 kPalette[7] = {
+    float3(0.10, 0.10, 0.55), // 1  — тёмно-синий
+    float3(0.00, 0.75, 1.00), // 2  — голубой
+    float3(0.00, 0.90, 0.20), // 4  — зелёный
+    float3(0.95, 0.95, 0.00), // 8  — жёлтый
+    float3(1.00, 0.55, 0.00), // 16 — оранжевый
+    float3(1.00, 0.10, 0.10), // 32 — красный
+    float3(1.00, 0.00, 0.85)  // 64 — маджента
+};
+
+// Ступенчатая раскраска по log2(level): 1→0, 2→1, 4→2, ... 64→6
+float3 TessLevelColor(float level, float maxRef) {
+    float l = max(level, 1.0);
+    float idx = log2(l);                       // 0..6 для 1..64
+    float maxIdx = log2(max(maxRef, 1.0));     // обычно 6
+    float t = saturate(idx / max(1.0, maxIdx));// 0..1
+    float seg = t * 6.0;                       // 7 сегментов → 0..6
+    float i0 = floor(seg);
+    float f  = seg - i0;
+    int   a  = (int)clamp(i0, 0, 6);
+    int   b  = (int)clamp(i0 + 1, 0, 6);
+    // Ступенчато: без плавного перехода, чтобы соседние уровни не сливались
+    return kPalette[a];
+}
+
+// Изолиния на границах 2^k
+float TessIsoLine(float level) {
+    float l = max(level, 1.0);
+    float idx = log2(l);
+    float frac_ = abs(frac(idx) - 0.0);
+    // Резкая линия там, где idx ≈ целое (уровень = степень двойки)
+    float d = abs(idx - round(idx));
+    return smoothstep(0.08, 0.0, d);
+}
+
+// Цвет по расстоянию до камеры (синий → красный)
+float3 DistanceColor(float d, float dMin, float dMax) {
+    float t = saturate((d - dMin) / max(0.0001, dMax - dMin));
+    // 5 сегментов
+    float seg = t * 4.0;
+    float i0 = floor(seg);
+    float f  = seg - i0;
+    int   a  = (int)clamp(i0, 0, 4);
+    int   b  = (int)clamp(i0 + 1, 0, 4);
+    float3 cols[5] = {
+        float3(0.10, 0.30, 1.00),
+        float3(0.00, 0.90, 0.90),
+        float3(0.10, 0.90, 0.10),
+        float3(1.00, 0.90, 0.00),
+        float3(1.00, 0.10, 0.10)
+    };
+    return lerp(cols[a], cols[b], f);
+}
+
+// Хэш цвета по patchId, чтобы соседние патчи отличались
+float3 PatchHashColor(float patchId) {
+    float h = frac(sin(patchId * 12.9898) * 43758.5453);
+    float h2 = frac(sin(patchId * 78.233) * 12345.6789);
+    float h3 = frac(sin(patchId * 39.425) * 24680.1357);
+    return float3(h, h2, h3);
+}
+
+// Рисуем масштабную линейку в правом верхнем углу
+// screenSize — размер вьюпорта; возвращает rgb и alpha=1 если пиксель попал
+float4 DrawScaleBar(float2 pixelPos, float2 screenSize) {
+    float margin = visualParams3.y;   // ← стало
+    float w      = visualParams2.w;   // ← стало
+    float h      = visualParams3.x;   // ← стало
+    float2 topRight = float2(screenSize.x - margin, margin);
+
+    // Область легенды
+    float2 barMin = float2(topRight.x - w, topRight.y);
+    float2 barMax = float2(topRight.x, topRight.y + h);
+
+    // Обводка
+    float border = 1.0;
+    bool inOuter =
+        pixelPos.x >= barMin.x - border && pixelPos.x <= barMax.x + border &&
+        pixelPos.y >= barMin.y - border && pixelPos.y <= barMax.y + border;
+    if (!inOuter) return float4(0,0,0,0);
+
+    // Внутренняя часть
+    bool inInner =
+        pixelPos.x >= barMin.x && pixelPos.x <= barMax.x &&
+        pixelPos.y >= barMin.y && pixelPos.y <= barMax.y;
+
+    if (!inInner) {
+        return float4(0,0,0,1); // рамка
     }
-    
-    Texture2D diffuseTexture : register(t0);
-    Texture2D normalMap      : register(t1);  // <-- КАРТА НОРМАЛЕЙ
-    Texture2D displacementMap : register(t2);
-    SamplerState textureSampler : register(s0);
-    
-    float3 TessLevelToColor(float tessLevel) {
-        float t = saturate(tessLevel / 64.0);
-        float3 color;
-        if (t < 0.2) {
-            color = lerp(float3(0, 0, 0.5), float3(0, 0.8, 1), t / 0.2);
-        } else if (t < 0.4) {
-            color = lerp(float3(0, 0.8, 1), float3(0, 1, 0), (t - 0.2) / 0.2);
-        } else if (t < 0.6) {
-            color = lerp(float3(0, 1, 0), float3(1, 1, 0), (t - 0.4) / 0.2);
-        } else if (t < 0.8) {
-            color = lerp(float3(1, 1, 0), float3(1, 0.5, 0), (t - 0.6) / 0.2);
-        } else {
-            color = lerp(float3(1, 0.5, 0), float3(1, 0, 0), (t - 0.8) / 0.2);
-        }
-        return color;
+
+    // 7 сегментов слева направо (64 → 1), чтобы соответствовать палитре
+    float u = saturate((pixelPos.x - barMin.x) / w); // 0..1
+    // Инвертируем: слева 64, справа 1
+    float seg = (1.0 - u) * 7.0;
+    int   idx = (int)clamp(floor(seg), 0, 6);
+    float3 col = kPalette[idx];
+
+    // Тонкие разделители между сегментами
+    float segFrac = frac(seg);
+    if (segFrac < 0.02 || segFrac > 0.98) col = float3(0,0,0);
+
+    return float4(col, 1);
+}
+
+PS_OUTPUT main(PS_INPUT input) {
+    PS_OUTPUT o;
+
+    int   showVisualization = (int)visualParams.x;
+    int   useNormalMap      = (int)visualParams.y;
+    float normalStrength    = visualParams.z;
+    int   showWireframe     = (int)visualParams.w;
+    float lineWidth         = visualParams2.x;
+    int   colorMode         = (int)visualParams2.y;
+    int   showScaleBar      = (int)visualParams2.z;
+    float scaleBarWidth     = visualParams2.w;
+    float scaleBarHeight    = visualParams3.x;
+    float scaleBarMargin    = visualParams3.y;   // ← ЭТО ПРОПУЩЕНО
+    float tessLevelMaxRef   = visualParams3.z;
+
+    float minTessDist       = tessParams.x;
+    float maxTessDist       = tessParams.y;
+
+    // ===== Диффузная текстура =====
+    float4 texColor = diffuseTexture.Sample(textureSampler, input.texcoord);
+
+    // ===== Normal mapping =====
+    float3 worldNormal;
+    if (useNormalMap) {
+        float3 sn = normalMap.Sample(textureSampler, input.texcoord).rgb;
+        sn = sn * 2.0 - 1.0;
+        sn.xy *= normalStrength;
+        sn = normalize(sn);
+        float3 N = normalize(input.normal);
+        float3 T = normalize(input.tangent);
+        float3 B = normalize(input.bitangent);
+        float3x3 TBN = float3x3(T, B, N);
+        worldNormal = normalize(mul(sn, TBN));
+    } else {
+        worldNormal = normalize(input.normal);
     }
-    
-    PS_OUTPUT main(PS_INPUT input) {
-        PS_OUTPUT output;
-        
-        // Сэмплируем диффузную текстуру
-        float4 texColor = diffuseTexture.Sample(textureSampler, input.texcoord);
-        
-        // ===== NORMAL MAPPING =====
-        float3 worldNormal;
-        
-        if (useNormalMap) {
-            // Сэмплируем карту нормалей
-            float3 sampledNormal = normalMap.Sample(textureSampler, input.texcoord).rgb;
-            
-            // Преобразуем из [0,1] в [-1,1]
-            sampledNormal = sampledNormal * 2.0 - 1.0;
-            
-            // Применяем силу normal mapping
-            sampledNormal.xy *= normalStrength;
-            sampledNormal = normalize(sampledNormal);
-            
-            // Строим TBN матрицу
-            float3 N = normalize(input.normal);
-            float3 T = normalize(input.tangent);
-            float3 B = normalize(input.bitangent);
-            
-            // Преобразуем нормаль из tangent space в world space
-            float3x3 TBN = float3x3(T, B, N);
-            worldNormal = normalize(mul(sampledNormal, TBN));
+
+    // ===== Цвет =====
+    float3 finalColor;
+
+    if (showVisualization) {
+        // --- Заливка по выбранному режиму ---
+        float3 fill;
+        if (colorMode == 0) {
+            fill = TessLevelColor(input.tessLevel, tessLevelMaxRef);
+        } else if (colorMode == 1) {
+            fill = DistanceColor(input.camDist, minTessDist, maxTessDist);
         } else {
-            // Используем обычную нормаль
-            worldNormal = normalize(input.normal);
+            fill = PatchHashColor(input.patchId);
         }
-        
-        // ===== ВЫБОР ЦВЕТА =====
-        float3 finalColor;
-        if (showVisualization) {
-            finalColor = TessLevelToColor(input.tessLevel);
+
+        // --- Изолинии на степенях двойки (только в режиме tessLevel) ---
+        if (colorMode == 0) {
+            float iso = TessIsoLine(input.tessLevel);
+            fill = lerp(fill, float3(1,1,1), iso * 0.6);
+        }
+
+        // --- Wireframe через barycentric ---
+        if (showWireframe) {
+            float3 d = fwidth(input.bary);
+            float3 a = smoothstep(float3(0,0,0), d * max(lineWidth, 0.5), input.bary);
+            float edge = min(min(a.x, a.y), a.z); // 0 на ребре, 1 внутри
+            // Инвертируем: 1 на ребре
+            edge = 1.0 - edge;
+            // Цвет линии подбираем контрастным к заливке
+            float lum = dot(fill, float3(0.299, 0.587, 0.114));
+            float3 lineCol = (lum > 0.5) ? float3(0,0,0) : float3(1,1,1);
+            finalColor = lerp(fill, lineCol, edge);
         } else {
-            finalColor = texColor.rgb;
+            finalColor = fill;
         }
-        
-        output.albedo = float4(finalColor, 1.0);
-        output.worldPos = float4(input.worldPos, 1.0);
-        // Кодируем нормаль в [0,1] для GBuffer
-        output.normal = float4(worldNormal * 0.5 + 0.5, 1.0);
-        
-        return output;
+    } else {
+        finalColor = texColor.rgb;
     }
+
+    // ===== Масштабная линейка =====
+    if (showVisualization && showScaleBar) {
+        // screenSize — размер RT; можно передать через cbuffer, но здесь захардкодим через SV_Position.w? 
+        // Проще: получить размер через GetDimensions у текстуры? Нет.
+        // Поэтому пробрасываем через scaleBarMargin-относительные координаты:
+        // используем input.position.xy как пиксельные координаты, а размер берём из
+        // константы 1920x1080 (совпадает с kWidth/kHeight). Если RT другой — поправьте.
+        float2 screenSize = float2(1920.0, 1080.0);
+        float4 bar = DrawScaleBar(input.position.xy, screenSize);
+        if (bar.a > 0.0) {
+            finalColor = lerp(finalColor, bar.rgb, bar.a);
+        }
+    }
+
+    o.albedo   = float4(finalColor, 1.0);
+    o.worldPos = float4(input.worldPos, 1.0);
+    o.normal   = float4(worldNormal * 0.5 + 0.5, 1.0);
+    return o;
+}
 )";
 
     hr = D3DCompile(geometryPS, strlen(geometryPS), nullptr, nullptr, nullptr,
@@ -1622,14 +1786,11 @@ HS_CONSTANT_OUTPUT PatchConstantFunc(InputPatch<HS_INPUT, 3> patch, uint patchID
     OutputDebugStringA("3. Creating PSO...\n");
 
     D3D12_INPUT_ELEMENT_DESC inputDesc[] = {
-        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,
-          D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12,
-          D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 24,
-          D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "TANGENT", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 32,
-          D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TANGENT", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 32, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "BITANGENT", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 44, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 } // Добавлено!
     };
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
@@ -1640,7 +1801,7 @@ HS_CONSTANT_OUTPUT PatchConstantFunc(InputPatch<HS_INPUT, 3> patch, uint patchID
     psoDesc.DS = { ds->GetBufferPointer(), ds->GetBufferSize() };
     psoDesc.PS = { ps->GetBufferPointer(), ps->GetBufferSize() };
 
-    psoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    psoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_WIREFRAME;
     psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
     psoDesc.RasterizerState.FrontCounterClockwise = FALSE;
     psoDesc.RasterizerState.DepthClipEnable = TRUE;
@@ -1734,19 +1895,6 @@ HS_CONSTANT_OUTPUT PatchConstantFunc(InputPatch<HS_INPUT, 3> patch, uint patchID
 
         // ВАЖНО: Обнуляем ВЕСЬ буфер, а не только структуру
         ZeroMemory(mappedData, alignedSize);
-
-        // Инициализируем только те поля, которые есть в структуре
-        TessellationConstantBuffer* cbData = (TessellationConstantBuffer*)mappedData;
-        cbData->minTessDist = 5.0f;
-        cbData->maxTessDist = 100.0f;
-        cbData->minTessLevel = 2.0f;
-        cbData->maxTessLevel = 32.0f;
-        cbData->showVisualization = 0;
-        cbData->padding = 0.0f;
-        cbData->useNormalMap = 0;
-        cbData->normalStrength = 1.0f;
-        cbData->padding2[0] = 0.0f;
-        cbData->padding2[1] = 0.0f;
     }
 
 

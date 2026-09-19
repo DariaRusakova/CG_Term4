@@ -105,19 +105,13 @@ private:
 
     // Структура для константного буфера тесселяции
     struct TessellationConstantBuffer {
-        DirectX::XMFLOAT4X4 viewMatrix;      // 64 байта (4x4 float32)
-        DirectX::XMFLOAT4X4 projMatrix;      // 64 байта
-        DirectX::XMFLOAT4 cameraPos;         // 16 байт
-        float minTessDist;                   // 4 байта
-        float maxTessDist;                   // 4 байта
-        float minTessLevel;                  // 4 байта
-        float maxTessLevel;                  // 4 байта
-        int showVisualization;               // 4 байта
-        float padding;                       // 4 байта (для выравнивания 16 байт)
-        int useNormalMap;                    // 4 байта
-        float normalStrength;                // 4 байта
-        float padding2[2];                  // 8 байт (дополнительное выравнивание)
-        // ОБЩИЙ РАЗМЕР: должен быть кратен 256 байтам
+        DirectX::XMFLOAT4X4 viewMatrix;   // offset 0,   64 bytes
+        DirectX::XMFLOAT4X4 projMatrix;   // offset 64,  64 bytes
+        DirectX::XMFLOAT4   cameraPos;    // offset 128, 16 bytes
+        DirectX::XMFLOAT4   tessParams;   // offset 144: x=minDist, y=maxDist, z=minLevel, w=maxLevel
+        DirectX::XMFLOAT4   visualParams; // offset 160: x=showVis, y=useNormalMap, z=normalStrength, w=showWireframe
+        DirectX::XMFLOAT4   visualParams2;// offset 176: x=lineWidth, y=colorMode, z=showScaleBar, w=scaleBarWidth
+        DirectX::XMFLOAT4   visualParams3;// offset 192: x=scaleBarHeight, y=scaleBarMargin, z=tessLevelMaxRef, w=padding
     };
 
     // PSO и Root Signature для геометрии
@@ -138,10 +132,16 @@ private:
     float m_tessMultiplier = 1.0f;
     bool m_showTessVisualization = false;  // Визуализация уровней тесселяции
 
-    float m_tessMinDist = 2.0f;
-    float m_tessMaxDist = 30.0f;
+    bool  m_showWireframe = true;     // каркас поверх раскраски
+    float m_lineWidth = 1.5f;     // толщина линий
+    int   m_colorMode = 0;        // 0=tessLevel, 1=distance, 2=patchHash
+    bool  m_showScaleBar = true;     // масштабная линейка
+
+
+    float m_tessMinDist = 5.0f;
+    float m_tessMaxDist = 300.0f;
     float m_tessMinLevel = 1.0f;
-    float m_tessMaxLevel = 64.0f;
+    float m_tessMaxLevel = 32.0f;
 
     // Камера
     Camera m_camera;
