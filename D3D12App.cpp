@@ -98,19 +98,15 @@ void D3D12App::Shutdown() {
         }
     }
 
-    // Очищаем векторы
     m_tessellationConstantBuffers.clear();
     m_tessCBData.clear();
 
-    // Очищаем систему рендеринга до освобождения устройств
     m_renderingSystem.reset();
 
     OutputDebugStringA("Shutdown complete\n");
 }
 
-// ==============================================
 // Инициализация
-// ==============================================
 
 void D3D12App::EnableDebugLayer() {
 #ifdef _DEBUG
@@ -240,7 +236,7 @@ void D3D12App::CreateSRVHeap() {
     ThrowIfFailed(m_device->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&m_srvHeap)));
     m_srvDescriptorSize = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-    // Создаём SRV для каждой текстуры
+    // SRV для каждой текстуры
     D3D12_CPU_DESCRIPTOR_HANDLE srvHandle = m_srvHeap->GetCPUDescriptorHandleForHeapStart();
 
     for (size_t i = 0; i < m_textures.size(); i++) {
@@ -257,11 +253,10 @@ void D3D12App::CreateSRVHeap() {
 
 void D3D12App::CreateBuffers() {
     // Загрузка модели уже выполнена в Initialize
-    // Здесь создаём буферы из загруженных данных
 
     ModelData model = ModelLoader::LoadOBJ("assets/sponza.obj", "assets");
 
-    // Создаём вершинный буфер
+    // Вершинный буфер
     const UINT vertexBufferSize = sizeof(Vertex) * (UINT)model.vertices.size();
 
     ComPtr<ID3D12Resource> vertexUploadBuffer;
@@ -320,7 +315,7 @@ void D3D12App::CreateBuffers() {
     m_vertexBufferView.StrideInBytes = sizeof(Vertex);
     m_vertexBufferView.SizeInBytes = vertexBufferSize;
 
-    // Создаём индексный буфер
+    // Индексный буфер
     const UINT indexBufferSize = sizeof(uint32_t) * (UINT)model.indices.size();
     m_indexCount = (UINT)model.indices.size();
 
@@ -464,7 +459,7 @@ bool D3D12App::Initialize(HWND hwnd) {
             }
         }
 
-        // Если нет текстур, создаем дефолтную
+        // дефолт текстура
         if (m_textures.empty()) {
             Texture defaultTex = TextureLoader::CreateDefaultTexture(m_device.Get(), m_commandList.Get());
             m_textures.push_back(defaultTex);
@@ -476,21 +471,20 @@ bool D3D12App::Initialize(HWND hwnd) {
         m_commandQueue->ExecuteCommandLists(1, lists);
         WaitForGpu();
 
-        // Создаем SRV кучу для обычных текстур
+        // SRV 
         CreateSRVHeap();
         m_srvDescriptorSize = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-        // Загружаем displacement map (ДОБАВЛЕНО)
+        // Загружаем displacement map 
         LoadDisplacementMap();
 
-        // Создаем геометрические буферы из загруженных данных
+        // Геометрические буферы из загруженных данных
         CreateBuffersFromData();
         CreateConstantBuffers();
 
-        // Создаем пайплайн тесселяции (ДОБАВЛЕНО)
+        // Пайплайн тесселяции 
         CreateTessellationPipeline();
 
-        // После CreateTessellationPipeline();
         OutputDebugStringA("Checking tessellation initialization...\n");
 
         for (uint32_t i = 0; i < kFrameCount; ++i) {
@@ -556,7 +550,6 @@ void D3D12App::CreateBuffersFromData() {
         D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
         IID_PPV_ARGS(&vertexUploadBuffer)), "Create vertex upload buffer");
 
-    // Копируем данные вершин в upload буфер
     void* data;
     D3D12_RANGE readRange = { 0, 0 };
     ThrowIfFailed(vertexUploadBuffer->Map(0, &readRange, &data), "Map vertex upload buffer");
@@ -603,7 +596,7 @@ void D3D12App::CreateBuffersFromData() {
     m_vertexBufferView.StrideInBytes = sizeof(Vertex);
     m_vertexBufferView.SizeInBytes = vertexBufferSize;
 
-    // ===== Создаем индексный буфер =====
+    // Создаем индексный буфер
     const UINT indexBufferSize = sizeof(uint32_t) * (UINT)m_indices.size();
     m_indexCount = (UINT)m_indices.size();
 
@@ -665,9 +658,9 @@ void D3D12App::DebugPrintMaterialMapping() {
     OutputDebugStringA("==========================\n");
 }
 
-// ==============================================
+
 // Рендеринг
-// ==============================================
+
 
 void D3D12App::UpdateConstantBuffer(uint32_t bufferIndex) {
     //m_rotationAngle += 0.005f;
@@ -818,7 +811,7 @@ void D3D12App::CreateGeometryPassPipelineState() {
         { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
         { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
         { "TANGENT", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 32, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "BITANGENT", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 44, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 } // Добавлено!
+        { "BITANGENT", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 44, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 } 
     };
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
@@ -911,7 +904,7 @@ void D3D12App::RenderFrame() {
         renderData.numMaterials = (UINT)m_materials.size();
         renderData.materials = m_materials.data();
 
-        // Параметры тесселяции (НОВЫЕ СТРОКИ)
+        // Параметры тесселяции 
         renderData.useTessellation = m_useTessellation;
         renderData.tessellationPSO = m_tessellationPSO.Get();
         renderData.tessellationRootSig = m_tessellationRootSig.Get();
@@ -982,7 +975,7 @@ void D3D12App::UpdateTessellationConstantBuffer(uint32_t bufferIndex) {
     TessellationConstantBuffer* cbData = (TessellationConstantBuffer*)m_tessCBData[bufferIndex];
     if (!cbData) return;
 
-    // ---- Матрицы ----
+    //Матрицы 
     XMMATRIX view = m_camera.GetViewMatrix();
     XMMATRIX proj = m_camera.GetProjectionMatrix();
     XMFLOAT3 cameraPos = m_camera.GetPosition();
@@ -991,7 +984,7 @@ void D3D12App::UpdateTessellationConstantBuffer(uint32_t bufferIndex) {
     XMStoreFloat4x4(&cbData->projMatrix, XMMatrixTranspose(proj));
     cbData->cameraPos = XMFLOAT4(cameraPos.x, cameraPos.y, cameraPos.z, 1.0f);
 
-    // ---- Параметры LOD ----
+    // Параметры LOD 
     cbData->tessParams = XMFLOAT4(
         m_tessMinDist,
         m_tessMaxDist,
@@ -999,23 +992,23 @@ void D3D12App::UpdateTessellationConstantBuffer(uint32_t bufferIndex) {
         m_tessMaxLevel
     );
 
-    // ---- Флаги визуализации ----
+    // Флаги визуализации 
     cbData->visualParams = XMFLOAT4(
         m_showTessVisualization ? 1.0f : 0.0f,                      // x
         m_useNormalMap ? 1.0f : 0.0f,                      // y
-        1.0f,                                                        // z = normalStrength
+        1.0f,                                                        // z
         (m_showTessVisualization && m_showWireframe) ? 1.0f : 0.0f  // w
     );
 
-    // ---- Стиль визуализации ----
+    // Стиль визуализации 
     cbData->visualParams2 = XMFLOAT4(
         m_lineWidth,                                                  // x
         (float)m_colorMode,                                           // y
         (m_showTessVisualization && m_showScaleBar) ? 1.0f : 0.0f,    // z
-        220.0f                                                        // w = scaleBarWidth
+        220.0f                                                        // w 
     );
 
-    // ---- Масштабная линейка ----
+    //  Масштабная линейка 
     cbData->visualParams3 = XMFLOAT4(
         28.0f,            // x = scaleBarHeight
         20.0f,            // y = scaleBarMargin
@@ -1033,10 +1026,7 @@ void D3D12App::UpdateTessellationConstantBuffer(uint32_t bufferIndex) {
 }
 
 
-// ==============================================
 // Ожидание и синхронизация
-// ==============================================
-
 void D3D12App::WaitForPreviousFrame() {
     if (m_fence->GetCompletedValue() < m_fenceValue) {
         ThrowIfFailed(m_fence->SetEventOnCompletion(m_fenceValue, m_fenceEvent), "SetEventOnCompletion");
@@ -1056,9 +1046,8 @@ void D3D12App::WaitForGpu() {
     WaitForSingleObject(m_fenceEvent, INFINITE);
 }
 
-// ==============================================
+
 // Управление камерой и ввод
-// ==============================================
 
 void D3D12App::OnMouseWheel(int delta) {
     float zoomAmount = (delta > 0) ? 0.5f : -0.5f;
@@ -1236,7 +1225,7 @@ void D3D12App::LoadDisplacementMap() {
 void D3D12App::CreateTessellationPipeline() {
     OutputDebugStringA("\n=== Creating Tessellation Pipeline ===\n");
 
-    // ===== 1. Создание Root Signature =====
+    // 1. Создание Root Signature 
     OutputDebugStringA("1. Creating root signature...\n");
 
     D3D12_ROOT_PARAMETER rootParams[3];
@@ -1320,7 +1309,7 @@ void D3D12App::CreateTessellationPipeline() {
     ThrowIfFailed(hr, "Failed to create tessellation root signature");
     OutputDebugStringA("Root signature created OK\n");
 
-    // ===== 2. Компиляция шейдеров =====
+    //  Компиляция шейдеров
     OutputDebugStringA("2. Compiling shaders...\n");
 
     UINT compileFlags = 0;
@@ -1696,10 +1685,10 @@ PS_OUTPUT main(PS_INPUT input) {
     float minTessDist       = tessParams.x;
     float maxTessDist       = tessParams.y;
 
-    // ===== Диффузная текстура =====
+    // Диффузная текстура 
     float4 texColor = diffuseTexture.Sample(textureSampler, input.texcoord);
 
-    // ===== Normal mapping =====
+    // Normal mapping
     float3 worldNormal;
     if (useNormalMap) {
         float3 sn = normalMap.Sample(textureSampler, input.texcoord).rgb;
@@ -1715,11 +1704,11 @@ PS_OUTPUT main(PS_INPUT input) {
         worldNormal = normalize(input.normal);
     }
 
-    // ===== Цвет =====
+    // Цвет 
     float3 finalColor;
 
     if (showVisualization) {
-        // --- Заливка по выбранному режиму ---
+        //  Заливка по выбранному режиму
         float3 fill;
         if (colorMode == 0) {
             fill = TessLevelColor(input.tessLevel, tessLevelMaxRef);
@@ -1729,13 +1718,13 @@ PS_OUTPUT main(PS_INPUT input) {
             fill = PatchHashColor(input.patchId);
         }
 
-        // --- Изолинии на степенях двойки (только в режиме tessLevel) ---
+        //Изолинии на степенях двойки (только в режиме tessLevel)
         if (colorMode == 0) {
             float iso = TessIsoLine(input.tessLevel);
             fill = lerp(fill, float3(1,1,1), iso * 0.6);
         }
 
-        // --- Wireframe через barycentric ---
+        // Wireframe через barycentric 
         if (showWireframe) {
             float3 d = fwidth(input.bary);
             float3 a = smoothstep(float3(0,0,0), d * max(lineWidth, 0.5), input.bary);
@@ -1753,7 +1742,7 @@ PS_OUTPUT main(PS_INPUT input) {
         finalColor = texColor.rgb;
     }
 
-    // ===== Масштабная линейка =====
+    // Масштабная линейка 
     if (showVisualization && showScaleBar) {
         // screenSize — размер RT; можно передать через cbuffer, но здесь захардкодим через SV_Position.w? 
         // Проще: получить размер через GetDimensions у текстуры? Нет.
@@ -1782,7 +1771,7 @@ PS_OUTPUT main(PS_INPUT input) {
     }
     OutputDebugStringA("PS compiled OK\n");
 
-    // ===== 3. Создание PSO =====
+    //  Создание PSO 
     OutputDebugStringA("3. Creating PSO...\n");
 
     D3D12_INPUT_ELEMENT_DESC inputDesc[] = {
@@ -1790,7 +1779,7 @@ PS_OUTPUT main(PS_INPUT input) {
         { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
         { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
         { "TANGENT", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 32, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "BITANGENT", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 44, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 } // Добавлено!
+        { "BITANGENT", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 44, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 } 
     };
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
@@ -1830,8 +1819,7 @@ PS_OUTPUT main(PS_INPUT input) {
     }
     OutputDebugStringA("PSO created OK\n");
 
-    // ===== 4. СОЗДАНИЕ КОНСТАНТНЫХ БУФЕРОВ ТЕССЕЛЯЦИИ =====
-    // ВОТ ЭТА СЕКЦИЯ! Она идет ПОСЛЕ создания PSO
+    // СОЗДАНИЕ КОНСТАНТНЫХ БУФЕРОВ ТЕССЕЛЯЦИИ 
     OutputDebugStringA("4. Creating tessellation constant buffers...\n");
 
     m_tessellationConstantBuffers.clear();
