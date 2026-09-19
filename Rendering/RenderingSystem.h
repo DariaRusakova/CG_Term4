@@ -46,8 +46,6 @@ public:
 
     void Initialize(ID3D12Device* device, UINT width, UINT height);
 
-    // Убираем Resize, так как он не реализован
-    // void Resize(ID3D12Device* device, UINT width, UINT height);
 
     void Render(ID3D12GraphicsCommandList* cmdList,
         ID3D12Resource* depthStencil,

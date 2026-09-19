@@ -39,22 +39,16 @@ cbuffer TessellationParams : register(b1) {
 //    return lerp(maxTessLevel, minTessLevel, t);
 //}
 
-// Более продвинутая версия с учетом размера треугольника на экране
 float ComputeTessLevel(float3 worldPos0, float3 worldPos1) {
-    // Преобразуем обе точки в пространство вида
     float4 eyePos0 = mul(float4(worldPos0, 1.0), viewMatrix);
     float4 eyePos1 = mul(float4(worldPos1, 1.0), viewMatrix);
     
-    // Вычисляем расстояние между точками в пространстве вида
     float edgeLength = length(eyePos1.xyz - eyePos0.xyz);
     
-    // Вычисляем расстояние до камеры (среднее)
     float distance = (abs(eyePos0.z) + abs(eyePos1.z)) * 0.5;
     
-    // Чем ближе и больше ребро, тем выше тесселяция
     float tessFactor = maxTessLevel * saturate(1.0 - (distance - minTessDist) / (maxTessDist - minTessDist));
     
-    // Учитываем размер ребра (большие рёбра требуют больше разбиений)
     float edgeFactor = edgeLength / 5.0;  // 5.0 - эмпирический коэффициент
     
     return clamp(tessFactor * edgeFactor, minTessLevel, maxTessLevel);

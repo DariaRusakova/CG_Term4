@@ -1,6 +1,6 @@
 #pragma once
 #include <DirectXMath.h>
-#include <windows.h>  // Для UINT и других типов Windows
+#include <windows.h>  
 
 enum class LightType {
     Point = 0,
@@ -26,7 +26,6 @@ struct Light {
     }
 };
 
-// Структура для передачи света в константный буфер
 struct LightBuffer {
     DirectX::XMFLOAT4 position_type[16];      // xyz=position, w=type
     DirectX::XMFLOAT4 direction[16];          // xyz=direction, w=unused

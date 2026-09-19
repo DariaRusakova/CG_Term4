@@ -16,7 +16,6 @@
 #include "Texture/TextureLoader.h"
 #include "Rendering/RenderingSystem.h"
 
-// Структура для сцены (константный буфер b0)
 struct SceneConstantBuffer {
     DirectX::XMFLOAT4X4 worldViewProj;
     DirectX::XMFLOAT4X4 world;
@@ -31,16 +30,12 @@ struct SceneConstantBuffer {
     DirectX::XMFLOAT2 textureOffset;
 };
 
-// Структуры для BVH (AABB-tree)
-
-// Выровненный по осям ограничивающий параллелепипед
 struct AABB {
     DirectX::XMFLOAT3 min;
     DirectX::XMFLOAT3 max;
 
     AABB() : min(FLT_MAX, FLT_MAX, FLT_MAX), max(-FLT_MAX, -FLT_MAX, -FLT_MAX) {}
 
-    // Расширить AABB точкой
     void Extend(const DirectX::XMFLOAT3& point) {
         min.x = std::min(min.x, point.x);
         min.y = std::min(min.y, point.y);
@@ -50,7 +45,6 @@ struct AABB {
         max.z = std::max(max.z, point.z);
     }
 
-    // Расширить другим AABB
     void Extend(const AABB& other) {
         min.x = std::min(min.x, other.min.x);
         min.y = std::min(min.y, other.min.y);
@@ -60,7 +54,6 @@ struct AABB {
         max.z = std::max(max.z, other.max.z);
     }
 
-    // Центр AABB
     DirectX::XMFLOAT3 Center() const {
         return DirectX::XMFLOAT3(
             (min.x + max.x) * 0.5f,
@@ -69,7 +62,6 @@ struct AABB {
         );
     }
 
-    // Полуразмер (extents)
     DirectX::XMFLOAT3 HalfSize() const {
         return DirectX::XMFLOAT3(
             (max.x - min.x) * 0.5f,
@@ -79,19 +71,17 @@ struct AABB {
     }
 };
 
-// Узел BVH
+
 struct BVHNode {
     AABB bounds;               // Ограничивающий объём узла
     BVHNode* left = nullptr;   // Левый потомок
     BVHNode* right = nullptr;  // Правый потомок
-    bool isLeaf = false;       // Лист?
+    bool isLeaf = false;       
 
-    // Данные листа
     std::vector<uint32_t> instanceIndices;  // Индексы инстансов в листе
-    uint32_t depth = 0;                     // Глубина узла (для отладки)
+    uint32_t depth = 0;                    
 };
 
-// Вспомогательная функция
 inline void ThrowIfFailed(HRESULT hr, const char* errorMsg = "") {
     if (FAILED(hr)) {
         char buffer[512];
@@ -110,7 +100,6 @@ public:
     void RenderFrame();
     void Shutdown();
 
-    // Управление камерой и ввод
     void OnMouseWheel(int delta);
     void OnMouseDown(int x, int y);
     void OnMouseUp();
@@ -161,23 +150,22 @@ private:
     Texture m_displacementTexture;
     int m_displacementTextureIndex = -1;
     bool m_useTessellation = true;
-    bool m_useNormalMap = true;  // Использовать карту нормалей
+    bool m_useNormalMap = true; 
 
     // Структура для константного буфера тесселяции
     struct TessellationConstantBuffer {
-        DirectX::XMFLOAT4X4 viewMatrix;      // 64 байта (4x4 float32)
-        DirectX::XMFLOAT4X4 projMatrix;      // 64 байта
-        DirectX::XMFLOAT4 cameraPos;         // 16 байт
-        float minTessDist;                   // 4 байта
-        float maxTessDist;                   // 4 байта
-        float minTessLevel;                  // 4 байта
-        float maxTessLevel;                  // 4 байта
-        int showVisualization;               // 4 байта
-        float padding;                       // 4 байта (для выравнивания 16 байт)
-        int useNormalMap;                    // 4 байта
-        float normalStrength;                // 4 байта
-        float padding2[2];                  // 8 байт (дополнительное выравнивание)
-        // ОБЩИЙ РАЗМЕР: должен быть кратен 256 байтам
+        DirectX::XMFLOAT4X4 viewMatrix;      
+        DirectX::XMFLOAT4X4 projMatrix;      
+        DirectX::XMFLOAT4 cameraPos;        
+        float minTessDist;                   
+        float maxTessDist;                   
+        float minTessLevel;                  
+        float maxTessLevel;                  
+        int showVisualization;               
+        float padding;                       
+        int useNormalMap;                   
+        float normalStrength;                
+        float padding2[2];               
     };
 
     // PSO и Root Signature для геометрии
@@ -196,7 +184,7 @@ private:
 
 
     float m_tessMultiplier = 1.0f;
-    bool m_showTessVisualization = false;  // Визуализация уровней тесселяции
+    bool m_showTessVisualization = false;  
 
     float m_tessMinDist = 2.0f;
     float m_tessMaxDist = 30.0f;
@@ -212,9 +200,9 @@ private:
 
     // Frustum culling
     bool m_useFrustumCulling = true;
-    float m_cullDistance = 250.0f;  // Дистанция отсечения
+    float m_cullDistance = 250.0f;  
 
-    // Плоскости фрустума (6 плоскостей: left, right, top, bottom, near, far)
+    // Плоскости фрустума (left, right, top, bottom, near, far)
     DirectX::XMFLOAT4 m_frustumPlanes[6];
 
     // Кэш видимых инстансов
@@ -239,8 +227,6 @@ private:
     void DestroyBVH();
 
 
-
-    // Камера
     Camera m_camera;
     bool m_mousePressed = false;
     POINT m_lastMousePos = { 0, 0 };
@@ -252,15 +238,13 @@ private:
     // Система рендеринга
     std::unique_ptr<RenderingSystem> m_renderingSystem;
 
-    // Индекс текущего кадра и синхронизация
     uint32_t m_frameIndex = 0;
     uint64_t m_fenceValue = 1;
 
-    // Анимация
     float m_rotationAngle = 0.0f;
     float m_textureAnimTime = 0.0f;
 
-    // ===== Методы инициализации =====
+    //  Методы инициализации
     void EnableDebugLayer();
     void CreateDevice();
     void CreateCommandObjects();
@@ -268,15 +252,14 @@ private:
     void CreateDescriptorHeaps();
     void CreateDepthStencil();
     void CreateSRVHeap();
-    void CreateBuffers();                          // Старый метод (устаревший)
-    void CreateBuffersFromData();                  // Новый метод (используется в Initialize)
+    void CreateBuffers();                       
+    void CreateBuffersFromData();               
     void CreateConstantBuffers();
-    void CreateTessellationPipeline();             // Новый метод для тесселяции
-    void LoadDisplacementMap();                    // Новый метод для загрузки displacement
+    void CreateTessellationPipeline();             
+    void LoadDisplacementMap();                    
 
-    // ===== Методы рендеринга =====
     void UpdateConstantBuffer(uint32_t bufferIndex);
-    void UpdateTessellationConstantBuffer(uint32_t bufferIndex);  // Новый метод
+    void UpdateTessellationConstantBuffer(uint32_t bufferIndex);  
     void CreateGeometryPassRootSignature();
     void CreateGeometryPassPipelineState();
     void DebugPrintMaterialMapping();
@@ -285,16 +268,14 @@ private:
     void CreateInstanceBuffer();
     void CreateInstancedTessellationPipeline();
 
-    void ComputeFrustumPlanes();                                    // Вычисление плоскостей фрустума
-    bool IsInstanceVisible(const InstanceData& instance);          // Проверка видимости
-    void UpdateVisibleInstances();                                  // Обновление списка видимых
+    void ComputeFrustumPlanes();                                   
+    bool IsInstanceVisible(const InstanceData& instance);         
+    void UpdateVisibleInstances();                                 
 
-    // ===== Методы синхронизации =====
     void WaitForPreviousFrame();
     void SignalFrame();
     void WaitForGpu();
 
-    // ===== Вспомогательные методы =====
     static UINT AlignSizeForCB(UINT size) {
         return (size + 255) & ~255;
     }

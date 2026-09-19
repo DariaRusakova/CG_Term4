@@ -66,13 +66,13 @@ void GBuffer::CreateDescriptors(ID3D12Device* device,
     };
 
     for (int i = 0; i < GB_COUNT; ++i) {
-        // Создаем RTV для каждой текстуры GBuffer
+        // RTV для каждой текстуры GBuffer
         D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle;
         rtvHandle.ptr = rtvStart.ptr + i * rtvDescriptorSize;
         device->CreateRenderTargetView(m_resources[i].Get(), nullptr, rtvHandle);
         m_rtvHandles[i] = rtvHandle;
 
-        // Создаем SRV для каждой текстуры GBuffer
+        // SRV для каждой текстуры GBuffer
         D3D12_CPU_DESCRIPTOR_HANDLE srvHandle;
         srvHandle.ptr = srvStart.ptr + i * srvDescriptorSize;
 
@@ -88,7 +88,7 @@ void GBuffer::CreateDescriptors(ID3D12Device* device,
         device->CreateShaderResourceView(m_resources[i].Get(), &srvDesc, srvHandle);
         m_srvHandles[i] = srvHandle;
 
-        // Сохраняем GPU дескриптор, используя переданный srvHeap
+        //  GPU дескриптор
         D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = srvHeap->GetGPUDescriptorHandleForHeapStart();
         m_gpuSrvHandles[i].ptr = gpuHandle.ptr + i * srvDescriptorSize;
     }
