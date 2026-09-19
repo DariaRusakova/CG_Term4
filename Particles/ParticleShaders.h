@@ -2,9 +2,8 @@
 
 namespace ParticleShaders {
 
-    // Compute Shader: Эмиссия и обновление частиц
+    // Compute Shader
     static const char* EmitUpdateCS = R"(
-    // Структура частицы для шейдера
     struct ShaderParticle {
         float3 position;
         float age;
@@ -46,7 +45,7 @@ namespace ParticleShaders {
     void main(uint3 id : SV_DispatchThreadID) {
         uint index = id.x;
         
-        // 1. Обработка существующих частиц
+        // Обработка  частиц
         ShaderParticle p = consumeBuffer.Consume();
         if (p.age < 1.0f) {
             p.age += deltaTime / max(p.lifetime, 0.001f);
@@ -58,7 +57,7 @@ namespace ParticleShaders {
             }
         }
         
-        // 2. Эмиссия новых частиц
+        // Эмиссия новых частиц
         float emitCount = emitRate * deltaTime;
         if ((float)index < emitCount) {
             float3 seed = float3((float)index * 1.7f, (float)index * 3.2f, (float)index * 5.1f);
@@ -92,7 +91,6 @@ namespace ParticleShaders {
     }
 )";
 
-    // Vertex Shader для билбордов (проходит через GS)
     static const char* BillboardVS = R"(
         struct VSInput {
             float3 position : POSITION;
@@ -120,7 +118,6 @@ namespace ParticleShaders {
         }
     )";
 
-    // Geometry Shader для развёртывания точек в билборды
     static const char* BillboardGS = R"(
         struct GSInput {
             float3 position : POSITION;
