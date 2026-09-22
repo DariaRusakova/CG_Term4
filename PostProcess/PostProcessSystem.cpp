@@ -194,6 +194,7 @@ float4 PS_Sepia(PSInput input) : SV_TARGET
 
 float4 PS_EdgeDetection(PSInput input) : SV_TARGET
 {
+    // Размер текселя - передавайте через константу, но пока хардкод
     float2 texelSize = float2(1.0f / 1024.0f, 1.0f / 768.0f);
     
     const float3x3 sobelX = {
@@ -208,8 +209,10 @@ float4 PS_EdgeDetection(PSInput input) : SV_TARGET
     };
     
     float3 samples[3][3];
+    [unroll]
     for (int y = -1; y <= 1; y++)
     {
+        [unroll]
         for (int x = -1; x <= 1; x++)
         {
             float2 sampleUV = input.uv + float2(x, y) * texelSize;
@@ -217,31 +220,67 @@ float4 PS_EdgeDetection(PSInput input) : SV_TARGET
         }
     }
     
+    // Пустые пиксели (фон) — ничего не рисуем
     if (length(samples[1][1]) < 0.001f)
         return float4(0.0f, 0.0f, 0.0f, 1.0f);
+    
+    // ============================================
+    // НОРМАЛИЗАЦИЯ ГЛУБИНЫ/WORLD POS ПЕРЕД SOBEL
+    // ============================================
+    // Ключевой момент: Sobel должен работать по РАЗНОСТИ соседних пикселей,
+    // а не по абсолютным мировым координатам (они очень большие ~ десятки).
+    // Вычитаем центральный пиксель из всех сэмплов => получаем только локальные изменения.
+    float3 center = samples[1][1];
     
     float3 edgeX = float3(0, 0, 0);
     float3 edgeY = float3(0, 0, 0);
     
+    [unroll]
     for (int i = 0; i < 3; i++)
     {
+        [unroll]
         for (int j = 0; j < 3; j++)
         {
-            edgeX += samples[i][j] * sobelX[i][j];
-            edgeY += samples[i][j] * sobelY[i][j];
+            float3 localDiff = samples[i][j] - center;  // локальная разница
+            edgeX += localDiff * sobelX[i][j];
+            edgeY += localDiff * sobelY[i][j];
         }
     }
     
-    float magnitude = length(edgeX) + length(edgeY);
-    float edgeStrength = saturate(magnitude * 2.0f);
+    // ============================================
+    // УМЕНЬШЕНИЕ ЧУВСТВИТЕЛЬНОСТИ
+    // ============================================
+    float magnitude = sqrt(dot(edgeX, edgeX) + dot(edgeY, edgeY));
     
+    // Множитель 0.15 вместо 2.0 - сильно снижаем чувствительность
+    float edgeStrength = saturate(magnitude * 0.25f);
+    
+    // ============================================
+    // ПОРОГ ОТСЕЧЕНИЯ + МЯГКИЙ ПЕРЕХОД
+    // ============================================
+    // Только выраженные границы становятся линиями, слабые — игнорируются
+    float lowThreshold  = 0.25f;
+    float highThreshold = 0.55f;
+    float edge = smoothstep(lowThreshold, highThreshold, edgeStrength);
+    
+    // ============================================
+    // ПРИГЛУШЁННЫЙ ЦВЕТ ЛИНИЙ
+    // ============================================
     float4 albedo = g_AlbedoTexture.Sample(g_Sampler, input.uv);
     float3 result = albedo.rgb;
-    float3 edgeColor = float3(1.0f, 1.0f, 1.0f);
     
-    float threshold = 0.15f;
-    float edge = smoothstep(threshold, threshold + 0.2f, edgeStrength);
-    result = lerp(result, edgeColor, edge);
+    // Не чистый белый, а светло-серый — иначе выглядит как засветка
+    float3 edgeColor = float3(0.7f, 0.75f, 0.8f);
+    
+    // Ограничиваем максимальную яркость линий (edge не должен быть > 0.8)
+    float edgeAmount = edge * 0.7f;
+    
+    result = lerp(result, edgeColor, edgeAmount);
+    
+    // ============================================
+    // КЛЭМП ЯРКОСТИ (защита от засветки)
+    // ============================================
+    result = saturate(result);
     
     return float4(result, 1.0f);
 }
