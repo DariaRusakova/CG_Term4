@@ -46,78 +46,84 @@ void RenderingSystem::Initialize(ID3D12Device* device, UINT width, UINT height) 
     CreateLightBuffers(device);
     CreateFullscreenQuad(device);
     CreateLightingPassPipeline(device);
+    CreateLightVisPipeline(device);
 
     ClearLights();
 
-    // Основной направленный свет (солнце) - теплый оттенок
-    Light sunLight;
-    sunLight.type = LightType::Directional;
-    sunLight.direction = XMFLOAT3(0.3f, -0.8f, 0.5f);  // Направление солнца
-    sunLight.color = XMFLOAT4(1.0f, 0.9f, 0.7f, 1.0f);  // Теплый солнечный цвет
-    sunLight.intensity = 0.8f;
-    AddLight(sunLight);
+    //// Основной направленный свет (солнце) - теплый оттенок
+    //Light sunLight;
+    //sunLight.type = LightType::Directional;
+    //sunLight.direction = XMFLOAT3(0.3f, -0.8f, 0.5f);  // Направление солнца
+    //sunLight.color = XMFLOAT4(1.0f, 0.9f, 0.7f, 1.0f);  // Теплый солнечный цвет
+    //sunLight.intensity = 0.8f;
+    //AddLight(sunLight);
 
     // Точечный свет в центре атриума (теплый)
-    Light centerLight;
-    centerLight.type = LightType::Point;
-    centerLight.position = XMFLOAT3(0.0f, 4.0f, 0.0f);
-    centerLight.color = XMFLOAT4(1.0f, 0.85f, 0.6f, 1.0f);
-    centerLight.intensity = 15.0f;
-    centerLight.range = 15.0f;
-    AddLight(centerLight);
+    //Light centerLight;
+    //centerLight.type = LightType::Point;
+    //centerLight.position = XMFLOAT3(0.0f, 4.0f, 0.0f);
+    //centerLight.color = XMFLOAT4(1.0f, 0.85f, 0.6f, 1.0f);
+    //centerLight.intensity = 5.0f;
+    //centerLight.range = 15.0f;
+    //AddLight(centerLight);
 
-    // Боковые точечные источники для подсветки колонн
-    Light leftColumn;
-    leftColumn.type = LightType::Point;
-    leftColumn.position = XMFLOAT3(-6.0f, 3.0f, -3.0f);
-    leftColumn.color = XMFLOAT4(0.9f, 0.8f, 0.7f, 1.0f);
-    leftColumn.intensity = 10.0f;
-    leftColumn.range = 10.0f;
-    AddLight(leftColumn);
+    Light ambient;
+    ambient.type = LightType::Point;
+    ambient.position = XMFLOAT3(0.0f, 6.0f, 0.0f);
+    ambient.color = XMFLOAT4(0.8f, 0.85f, 1.0f, 1.0f);
+    ambient.intensity = 1.0f;
+    ambient.range = 30.0f;
+    AddLight(ambient);
 
-    Light rightColumn;
-    rightColumn.type = LightType::Point;
-    rightColumn.position = XMFLOAT3(6.0f, 3.0f, 3.0f);
-    rightColumn.color = XMFLOAT4(0.9f, 0.8f, 0.7f, 1.0f);
-    rightColumn.intensity = 10.0f;
-    rightColumn.range = 10.0f;
-    AddLight(rightColumn);
+    //// Боковые точечные источники для подсветки колонн
+    //Light leftColumn;
+    //leftColumn.type = LightType::Point;
+    //leftColumn.position = XMFLOAT3(-6.0f, 3.0f, -3.0f);
+    //leftColumn.color = XMFLOAT4(0.9f, 0.8f, 0.7f, 1.0f);
+    //leftColumn.intensity = 10.0f;
+    //leftColumn.range = 10.0f;
+    //AddLight(leftColumn);
 
-    //// Свет сзади для подсветки задней стены
-    Light backWall;
-    backWall.type = LightType::Point;
-    backWall.position = XMFLOAT3(0.0f, 5.0f, -8.0f);
-    backWall.color = XMFLOAT4(1.0f, 0.85f, 0.7f, 1.0f);
-    backWall.intensity = 8.0f;
-    backWall.range = 12.0f;
-    AddLight(backWall);
+    //Light rightColumn;
+    //rightColumn.type = LightType::Point;
+    //rightColumn.position = XMFLOAT3(6.0f, 3.0f, 3.0f);
+    //rightColumn.color = XMFLOAT4(0.9f, 0.8f, 0.7f, 1.0f);
+    //rightColumn.intensity = 10.0f;
+    //rightColumn.range = 10.0f;
+    //AddLight(rightColumn);
 
-    //// Передний свет для подсветки входа
-    Light frontLight;
-    frontLight.type = LightType::Point;
-    frontLight.position = XMFLOAT3(0.0f, 3.0f, 8.0f);
-    frontLight.color = XMFLOAT4(0.8f, 0.9f, 1.0f, 1.0f);  // Немного холоднее для контраста
-    frontLight.intensity = 12.0f;
-    frontLight.range = 14.0f;
-    AddLight(frontLight);
+    ////// Свет сзади для подсветки задней стены
+    //Light backWall;
+    //backWall.type = LightType::Point;
+    //backWall.position = XMFLOAT3(0.0f, 5.0f, -8.0f);
+    //backWall.color = XMFLOAT4(1.0f, 0.85f, 0.7f, 1.0f);
+    //backWall.intensity = 8.0f;
+    //backWall.range = 12.0f;
+    //AddLight(backWall);
 
-    //// Spot свет сверху - как свет через окно
-    Light skylight;
-    skylight.type = LightType::Spot;
-    skylight.position = XMFLOAT3(0.0f, 10.0f, 0.0f);
-    skylight.direction = XMFLOAT3(0.0f, -1.0f, 0.1f);
-    skylight.color = XMFLOAT4(1.0f, 0.95f, 0.85f, 1.0f);
-    skylight.intensity = 25.0f;
-    skylight.range = 25.0f;
-    skylight.spotAngle = 40.0f * XM_PI / 180.0f;
-    AddLight(skylight);
+    ////// Передний свет для подсветки входа
+    //Light frontLight;
+    //frontLight.type = LightType::Point;
+    //frontLight.position = XMFLOAT3(0.0f, 3.0f, 8.0f);
+    //frontLight.color = XMFLOAT4(0.8f, 0.9f, 1.0f, 1.0f);  // Немного холоднее для контраста
+    //frontLight.intensity = 12.0f;
+    //frontLight.range = 14.0f;
+    //AddLight(frontLight);
+
+    ////// Spot свет сверху - как свет через окно
+    //Light skylight;
+    //skylight.type = LightType::Spot;
+    //skylight.position = XMFLOAT3(0.0f, 10.0f, 0.0f);
+    //skylight.direction = XMFLOAT3(0.0f, -1.0f, 0.1f);
+    //skylight.color = XMFLOAT4(1.0f, 0.95f, 0.85f, 1.0f);
+    //skylight.intensity = 25.0f;
+    //skylight.range = 25.0f;
+    //skylight.spotAngle = 40.0f * XM_PI / 180.0f;
+    //AddLight(skylight);
 
 
-    m_originalIntensities.clear();
-    for (const auto& light : m_lights) {
-        m_originalIntensities.push_back(light.intensity);
-    }
     m_globalIntensity = 0.1f;
+
 }
 
 void RenderingSystem::Resize(UINT width, UINT height) {
@@ -128,11 +134,15 @@ void RenderingSystem::Resize(UINT width, UINT height) {
 }
 
 void RenderingSystem::AddLight(const Light& light) {
-    m_lights.push_back(light);
+    m_staticLights.push_back(light);
+    m_originalIntensities.push_back(light.intensity);
 }
 
 void RenderingSystem::ClearLights() {
+    m_staticLights.clear();
     m_lights.clear();
+    m_originalIntensities.clear();
+    for (UINT i = 0; i < kMaxProjectiles; ++i) m_projectiles[i].alive = false;
 }
 
 // RenderingSystem.cpp
@@ -581,6 +591,9 @@ void RenderingSystem::Render(ID3D12GraphicsCommandList* cmdList,
     cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
     cmdList->DrawInstanced(4, 1, 0, 0);
 
+
+    RenderLightGizmos(cmdList, rtvHandle, renderData->viewProj);
+
     // Возвращаем GBuffer в RTV для следующего кадра
     for (int i = 0; i < GBuffer::GB_COUNT; ++i) {
         barriers[i].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -591,4 +604,271 @@ void RenderingSystem::Render(ID3D12GraphicsCommandList* cmdList,
         barriers[i].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
     }
     cmdList->ResourceBarrier(GBuffer::GB_COUNT, barriers);
+}
+
+void RenderingSystem::Update(float deltaTime) {
+    for (UINT i = 0; i < kMaxProjectiles; ++i) {
+        Projectile& p = m_projectiles[i];
+        if (!p.alive) continue;
+
+        p.position.x += p.velocity.x * deltaTime;
+        p.position.y += p.velocity.y * deltaTime;
+        p.position.z += p.velocity.z * deltaTime;
+        p.age += deltaTime;
+
+        if (p.age >= p.lifetime) {
+            p.alive = false;
+        }
+    }
+    RebuildLightsFromProjectiles();
+}
+
+// RenderingSystem.cpp
+void RenderingSystem::CreateLightVisPipeline(ID3D12Device* device) {
+    static const char* vsCode = R"(
+    cbuffer LightVisCB : register(b0) {
+        float4x4 viewProj;
+        float4 lightPos;
+        float4 lightColor;
+    };
+    struct VSOut {
+        float4 pos   : SV_POSITION;
+        float2 local : TEXCOORD0;
+        float4 color : COLOR;
+    };
+    VSOut main(uint vid : SV_VertexID) {
+        float2 corners[4] = {
+            float2(-1,-1), float2(-1, 1),
+            float2( 1,-1), float2( 1, 1)
+        };
+        float2 c = corners[vid];
+
+        float4 clip = mul(float4(lightPos.xyz, 1.0), viewProj);
+
+        VSOut o;
+        // Отсечение, если за камерой
+        if (clip.w <= 0.001) {
+            o.pos   = float4(0, 0, -2, 1);
+            o.local = float2(0, 0);
+            o.color = lightColor;
+            return o;
+        }
+
+        float4 ndc = clip / clip.w;
+        ndc.z = 0.5;
+
+        float screenSize = lightPos.w * 1.0 / clip.w;
+        screenSize = min(screenSize, 0.5);
+        float2 offset = c * screenSize;
+
+        o.pos   = float4(ndc.xy + offset, 0.5, 1.0);
+        o.local = c;
+        o.color = lightColor;
+        return o;
+    }
+)";
+
+    static const char* psCode = R"(
+    struct PSIn {
+        float4 pos   : SV_POSITION;
+        float2 local : TEXCOORD0;
+        float4 color : COLOR;
+    };
+    float4 main(PSIn i) : SV_TARGET {
+        float r = length(i.local);
+        if (r > 1.0) discard;
+
+        float core = smoothstep(0.5, 0.0, r);
+        float glow = pow(saturate(1.0 - r), 3.0);
+        float alpha = saturate(core + glow * 0.8);
+
+        return float4(saturate(i.color.rgb * 2.0) * i.color.a * alpha, alpha);
+    }
+)";
+
+    ComPtr<ID3DBlob> vs, ps, err;
+    HRESULT hr = D3DCompile(vsCode, strlen(vsCode), "LightVisVS",
+        nullptr, nullptr, "main", "vs_5_0", 0, 0, &vs, &err);
+    if (FAILED(hr)) {
+        if (err) OutputDebugStringA((char*)err->GetBufferPointer());
+        throw std::runtime_error("LightVis VS compile failed");
+    }
+
+    hr = D3DCompile(psCode, strlen(psCode), "LightVisPS",
+        nullptr, nullptr, "main", "ps_5_0", 0, 0, &ps, &err);
+    if (FAILED(hr)) {
+        if (err) OutputDebugStringA((char*)err->GetBufferPointer());
+        throw std::runtime_error("LightVis PS compile failed");
+    }
+
+    // Root signature: CBV b0
+    D3D12_ROOT_PARAMETER rp = {};
+    rp.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    rp.Descriptor.ShaderRegister = 0;
+    rp.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+    rsDesc.NumParameters = 1;
+    rsDesc.pParameters = &rp;
+    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+    ComPtr<ID3DBlob> sig;
+    hr = D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err);
+    if (FAILED(hr)) throw std::runtime_error("LightVis RS serialize failed");
+    device->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(),
+        IID_PPV_ARGS(&m_lightVisRootSig));
+
+    // PSO: без depth, alpha blending (аддитивный)
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
+    pso.pRootSignature = m_lightVisRootSig.Get();
+    pso.VS = { vs->GetBufferPointer(), vs->GetBufferSize() };
+    pso.PS = { ps->GetBufferPointer(), ps->GetBufferSize() };
+    pso.InputLayout = { nullptr, 0 };  // процедурные вершины
+    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pso.NumRenderTargets = 1;
+    pso.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+    pso.DSVFormat = DXGI_FORMAT_UNKNOWN;
+    pso.SampleDesc.Count = 1;
+    pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    pso.DepthStencilState.DepthEnable = FALSE;
+    pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+    pso.SampleMask = UINT_MAX;
+
+    // Аддитивный блендинг: dst = src + dst
+    auto& rt = pso.BlendState.RenderTarget[0];
+    rt.BlendEnable = TRUE;
+    rt.SrcBlend = D3D12_BLEND_ONE;
+    rt.DestBlend = D3D12_BLEND_ONE;
+    rt.BlendOp = D3D12_BLEND_OP_ADD;
+    rt.SrcBlendAlpha = D3D12_BLEND_ONE;
+    rt.DestBlendAlpha = D3D12_BLEND_ONE;
+    rt.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+    rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+    hr = device->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_lightVisPSO));
+    if (FAILED(hr)) throw std::runtime_error("LightVis PSO create failed");
+
+    // Constant buffer для визуализации
+    D3D12_HEAP_PROPERTIES hp = {}; hp.Type = D3D12_HEAP_TYPE_UPLOAD;
+    D3D12_RESOURCE_DESC rd = {};
+    rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    rd.Width = sizeof(LightVisConstants);
+    rd.Height = 1; rd.DepthOrArraySize = 1; rd.MipLevels = 1;
+    rd.Format = DXGI_FORMAT_UNKNOWN;
+    rd.SampleDesc.Count = 1;
+    rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd,
+        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_lightVisCB));
+
+    D3D12_RANGE rr = { 0, 0 };
+    m_lightVisCB->Map(0, &rr, &m_lightVisCBData);
+}
+
+void RenderingSystem::RenderLightGizmos(ID3D12GraphicsCommandList* cmdList,
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle,
+    const XMFLOAT4X4& viewProj) {
+    // Проверяем, есть ли вообще что рисовать
+    bool any = false;
+    for (UINT i = 0; i < kMaxProjectiles; ++i) {
+        if (m_projectiles[i].alive) { any = true; break; }
+    }
+    if (!any) return;
+
+    cmdList->SetGraphicsRootSignature(m_lightVisRootSig.Get());
+    cmdList->SetPipelineState(m_lightVisPSO.Get());
+
+    D3D12_VIEWPORT vp = { 0, 0, (float)m_width, (float)m_height, 0, 1 };
+    D3D12_RECT sc = { 0, 0, (LONG)m_width, (LONG)m_height };
+    cmdList->RSSetViewports(1, &vp);
+    cmdList->RSSetScissorRects(1, &sc);
+    cmdList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
+    cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+
+    for (UINT i = 0; i < kMaxProjectiles; ++i) {
+        const Projectile& p = m_projectiles[i];
+        if (!p.alive) continue;
+
+        float t = p.age / p.lifetime;
+        float fadeOut = 1.0f - t * t;
+        if (fadeOut < 0.0f) fadeOut = 0.0f;
+        float fadeIn = (p.age < 0.2f) ? (p.age / 0.2f) : 1.0f;
+        float fade = fadeIn * fadeOut;
+
+        LightVisConstants c = {};
+        XMStoreFloat4x4(&c.viewProj, XMMatrixTranspose(XMLoadFloat4x4(&viewProj)));
+        c.lightPos = XMFLOAT4(p.position.x, p.position.y, p.position.z, p.radius);
+        c.lightColor = XMFLOAT4(p.color.x, p.color.y, p.color.z,
+            p.intensity * fade * 0.5f);
+
+        memcpy(m_lightVisCBData, &c, sizeof(c));
+        cmdList->SetGraphicsRootConstantBufferView(
+            0, m_lightVisCB->GetGPUVirtualAddress());
+        cmdList->DrawInstanced(4, 1, 0, 0);
+    }
+}
+
+bool RenderingSystem::SpawnProjectile(const XMFLOAT3& origin,
+    const XMFLOAT3& dir,
+    const XMFLOAT4& color,
+    float speed,
+    float radius,
+    float intensity,
+    float range,
+    float lifetime) {
+    for (UINT i = 0; i < kMaxProjectiles; ++i) {
+        Projectile& p = m_projectiles[i];
+        if (p.alive) continue;
+
+        p.position = origin;
+        XMVECTOR d = XMVector3Normalize(XMLoadFloat3(&dir));
+        XMStoreFloat3(&p.velocity, d * speed);
+        p.color = color;
+        p.radius = radius;
+        p.intensity = intensity;
+        p.range = range;
+        p.lifetime = lifetime;
+        p.age = 0.0f;
+        p.alive = true;
+        return true;
+    }
+    return false;
+}
+
+void RenderingSystem::RebuildLightsFromProjectiles() {
+    m_lights.clear();
+    m_originalIntensities.clear();
+
+    // Статичные света (если есть)
+    for (const Light& l : m_staticLights) {
+        m_lights.push_back(l);
+        m_originalIntensities.push_back(l.intensity);
+    }
+
+    // Снаряды
+    for (UINT i = 0; i < kMaxProjectiles; ++i) {
+        const Projectile& p = m_projectiles[i];
+        if (!p.alive) continue;
+
+        float t = p.age / p.lifetime;
+        float fadeOut = 1.0f - t * t;
+        if (fadeOut < 0.0f) fadeOut = 0.0f;
+        float fadeIn = (p.age < 0.2f) ? (p.age / 0.2f) : 1.0f;
+        float fade = fadeIn * fadeOut;
+
+        Light light;
+        light.type = LightType::Point;
+        light.position = p.position;
+        light.color = p.color;
+        light.intensity = p.intensity * fade * m_globalIntensity;
+        light.range = p.range;
+        m_lights.push_back(light);
+        m_originalIntensities.push_back(light.intensity);
+    }
+
+    // Жёсткий лимит под шейдер
+    if (m_lights.size() > 16) {
+        m_lights.resize(16);
+        m_originalIntensities.resize(16);
+    }
 }

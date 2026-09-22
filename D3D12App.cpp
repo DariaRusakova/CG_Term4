@@ -729,6 +729,28 @@ void D3D12App::RenderFrame() {
         renderData.numMaterials = (UINT)m_materials.size();
         renderData.materials = m_materials.data();
 
+        XMMATRIX world = XMMatrixRotationY(m_rotationAngle);
+        XMMATRIX view = m_camera.GetViewMatrix();
+        XMMATRIX proj = m_camera.GetProjectionMatrix();
+        XMMATRIX wvp = world * view * proj;
+        XMStoreFloat4x4(&renderData.viewProj, wvp);
+
+        static LARGE_INTEGER freq = {};
+        static LARGE_INTEGER last = {};
+        if (freq.QuadPart == 0) {
+            QueryPerformanceFrequency(&freq);
+            QueryPerformanceCounter(&last);
+        }
+        LARGE_INTEGER now;
+        QueryPerformanceCounter(&now);
+        float deltaTime = float(now.QuadPart - last.QuadPart) / float(freq.QuadPart);
+        last = now;
+        // Ограничиваем dt, чтобы при паузах/отладке свет не "прыгал"
+        if (deltaTime > 0.1f) deltaTime = 0.1f;
+
+        m_shootCooldown = std::max(0.0f, m_shootCooldown - deltaTime);
+
+        m_renderingSystem->Update(deltaTime);
         m_renderingSystem->SetGlobalIntensity(m_lightIntensity);
 
         // Вызываем deferred rendering
@@ -861,6 +883,42 @@ void D3D12App::OnKeyDown(WPARAM wParam) {
         m_lightIntensity = 1.0f;
         OutputDebugStringA("Light Intensity Reset to 1.0\n");
         break;
+    case VK_SPACE: {
+        if (m_shootCooldown > 0.0f) break;
+
+        XMFLOAT3 camPos = m_camera.GetPosition();
+
+        // Точка, куда летит снаряд (можно независимо от target камеры)
+        const float aimHeight = 2.0f;     // выше центра модели
+        XMFLOAT3 aimPoint = { 0.0f, aimHeight, 0.0f };
+
+        XMFLOAT3 toAim = {
+            aimPoint.x - camPos.x,
+            aimPoint.y - camPos.y,
+            aimPoint.z - camPos.z
+        };
+        XMVECTOR dirV = XMVector3Normalize(XMLoadFloat3(&toAim));
+        XMFLOAT3 dir;
+        XMStoreFloat3(&dir, dirV);
+
+        const float spawnForward = 1.0f;    // вперёд от камеры
+        const float spawnUp = 0.3f;    // ← дополнительный подъём точки старта
+
+        XMFLOAT3 spawn = {
+            camPos.x + dir.x * spawnForward,
+            camPos.y + dir.y * spawnForward + spawnUp,
+            camPos.z + dir.z * spawnForward
+        };
+
+        if (!m_renderingSystem->SpawnProjectile(
+            spawn, dir,
+            XMFLOAT4(1.0f, 0.6f, 0.2f, 1.0f),
+            20.0f, 0.5f, 25.0f, 10.0f, 3.0f)) {
+            OutputDebugStringA("[Spawn] pool full\n");
+        }
+        m_shootCooldown = 0.15f;
+        break;
+    }
     }
 }
 

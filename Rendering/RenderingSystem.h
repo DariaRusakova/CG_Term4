@@ -7,12 +7,13 @@
 #include <directxmath.h>
 #include "GBuffer.h"
 #include "Light.h"
-#include "../Model/Material.h"  // Добавляем включение Material
+#include "../Model/Material.h"
 #include "Shaders/DeferredLightPass.h"
+#include "Projectile.h"
 
 class RenderingSystem {
 public:
-    // Структура для передачи данных рендеринга
+    // ================== RenderData ==================
     struct RenderData {
         ID3D12Resource* vertexBuffer;
         ID3D12Resource* indexBuffer;
@@ -23,7 +24,15 @@ public:
         const uint32_t* materialStartIndex;
         const uint32_t* materialIndexCount;
         UINT numMaterials;
-        const Material* materials;  // Используем правильный тип
+        const Material* materials;
+        DirectX::XMFLOAT4X4 viewProj;   // <-- добавлено для light gizmos
+    };
+
+    // ============== Константы визуализации света ==============
+    struct alignas(256) LightVisConstants  {
+        DirectX::XMFLOAT4X4 viewProj;
+        DirectX::XMFLOAT4   lightPos;    // xyz = world pos, w = radius
+        DirectX::XMFLOAT4   lightColor;  // rgb = color, a = intensity
     };
 
     RenderingSystem();
@@ -32,7 +41,6 @@ public:
     void Initialize(ID3D12Device* device, UINT width, UINT height);
     void Resize(UINT width, UINT height);
 
-    // Обновленный метод Render
     void Render(ID3D12GraphicsCommandList* cmdList,
         ID3D12Resource* depthStencil,
         D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle,
@@ -44,21 +52,41 @@ public:
     void AddLight(const Light& light);
     void ClearLights();
 
-    void SetGlobalIntensity(float intensity) {
-        if (!m_lights.empty()) {
-            m_globalIntensity = intensity;
-            // Обновляем интенсивность всех источников
-            for (auto& light : m_lights) {
-                light.intensity = m_originalIntensities[&light - m_lights.data()] * intensity;
-            }
-        }
-    }
+    static constexpr UINT kMaxProjectiles = 16;   // = lights[16] в шейдере
+
+    // Spawn снаряда из точки origin в направлении dir
+    bool SpawnProjectile(const DirectX::XMFLOAT3& origin,
+        const DirectX::XMFLOAT3& dir,
+        const DirectX::XMFLOAT4& color = { 1.0f, 0.6f, 0.2f, 1.0f },
+        float speed = 20.0f,
+        float radius = 0.5f,
+        float intensity = 25.0f,
+        float range = 10.0f,
+        float lifetime = 3.0f);
+
+    // Управление глобальной интенсивностью (только запоминает множитель)
+    void SetGlobalIntensity(float intensity) { m_globalIntensity = intensity; }
+
+    // Обновление (двигает снаряды, пересобирает m_lights)
+    void Update(float deltaTime);
 
 private:
     void CreateLightBuffers(ID3D12Device* device);
     void CreateFullscreenQuad(ID3D12Device* device);
     void CreateLightingPassPipeline(ID3D12Device* device);
+    void CreateLightVisPipeline(ID3D12Device* device);   // <-- объявление
 
+    void RenderLightGizmos(ID3D12GraphicsCommandList* cmdList,
+        D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle,
+        const DirectX::XMFLOAT4X4& viewProj);
+
+    // ============== Ресурсы визуализации света ==============
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> m_lightVisRootSig;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_lightVisPSO;
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_lightVisCB;
+    void* m_lightVisCBData = nullptr;
+
+    // ============== Ресурсы освещения ==============
     void* m_lightCBData = nullptr;
 
     float m_globalIntensity = 1.0f;
@@ -66,8 +94,8 @@ private:
 
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_lightingRootSig;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_lightingPSO;
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_fullscreenVB;
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_lightConstantBuffer;
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_fullscreenVB;
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_lightConstantBuffer;
 
     D3D12_VERTEX_BUFFER_VIEW m_fullscreenVBView;
 
@@ -88,8 +116,13 @@ private:
     };
 
     struct LightBufferGPU {
-        LightDataGPU lights[16]; // Теперь layout совпадает с HLSL
-        UINT lightCount;
-        float padding[3];
+        LightDataGPU lights[16];
+        UINT   lightCount;
+        float  padding[3];
     };
+
+    void RebuildLightsFromProjectiles();
+
+    Projectile m_projectiles[kMaxProjectiles] = {};
+    std::vector<Light> m_staticLights;   // «постоянные» света (не снаряды)
 };

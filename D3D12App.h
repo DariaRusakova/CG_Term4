@@ -46,6 +46,7 @@ public:
     void OnMouseMove(int x, int y);
     void OnKeyDown(WPARAM wParam);
     void ResetCamera();
+    float m_shootCooldown = 0.0f;
 
 private:
     static constexpr uint32_t kFrameCount = 2;
@@ -146,4 +147,7 @@ private:
 
     D3D12_VIEWPORT m_viewport;
     D3D12_RECT m_scissorRect;
+
+    float m_lightOrbitRadius = 3.0f;
+    float m_lightOrbitSpeed = 1.0f;
 };
