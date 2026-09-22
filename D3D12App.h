@@ -26,6 +26,10 @@ struct alignas(256) SceneConstantBuffer {
 };
 static_assert(sizeof(SceneConstantBuffer) == 256, "CB size mismatch");
 
+struct alignas(256) TileParamsCB {
+    DirectX::XMFLOAT4 rotTimeGrid;   // x=time, y=grid, z=speed, w=enable
+};
+
 class D3D12App {
 public:
     D3D12App();
@@ -60,6 +64,7 @@ private:
     void CreateBuffers();
     void CreateConstantBuffers();
     void UpdateConstantBuffer(uint32_t bufferIndex);
+    void UpdatePlatformConstantBuffer(uint32_t bufferIndex);
     void CreateBuffersFromData();
     void DebugPrintMaterialMapping();
 
@@ -83,8 +88,8 @@ private:
     uint32_t m_frameIndex = 0;
 
     // Descriptor sizes
-    uint32_t m_rtvDescriptorSize = 0;      // Добавлено
-    uint32_t m_srvDescriptorSize = 0;      // Добавлено
+    uint32_t m_rtvDescriptorSize = 0;
+    uint32_t m_srvDescriptorSize = 0;
 
     // Pipeline
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSignature;
@@ -123,4 +128,28 @@ private:
 
     D3D12_VIEWPORT m_viewport;
     D3D12_RECT m_scissorRect;
+
+    // Platform (roof-textured)
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_platformVertexBuffer;
+    D3D12_VERTEX_BUFFER_VIEW           m_platformVertexBufferView{};
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_platformIndexBuffer;
+    D3D12_INDEX_BUFFER_VIEW            m_platformIndexBufferView{};
+    UINT                               m_platformIndexCount = 0;
+    int                                m_roofTextureIndex = -1;
+
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_platformConstantBuffer[kFrameCount];
+    void* m_platformCbvDataBegin[kFrameCount] = {};
+
+    // Tile params (b2)
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_tileParamsCB[kFrameCount][2]; // [frame][0=off,1=on]
+    void* m_tileParamsData[kFrameCount][2] = {};
+    float                                  m_tileRotTime = 0.0f;
+    float m_tileRotDir = 1.0f;
+
+    // Platform transform
+    DirectX::XMFLOAT3 m_platformPosition = { 0.0f, 0.0f, 0.0f };
+    DirectX::XMFLOAT3 m_platformScale = { 1.0f, 1.0f, 1.0f };
+
+    void CreatePlatform();
+    void FindRoofTexture();
 };
