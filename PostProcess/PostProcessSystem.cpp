@@ -208,8 +208,10 @@ float4 PS_EdgeDetection(PSInput input) : SV_TARGET
     };
     
     float3 samples[3][3];
+    [unroll]
     for (int y = -1; y <= 1; y++)
     {
+        [unroll]
         for (int x = -1; x <= 1; x++)
         {
             float2 sampleUV = input.uv + float2(x, y) * texelSize;
@@ -219,35 +221,49 @@ float4 PS_EdgeDetection(PSInput input) : SV_TARGET
     
     if (length(samples[1][1]) < 0.001f)
         return float4(0.0f, 0.0f, 0.0f, 1.0f);
+   
+    float3 center = samples[1][1];
     
     float3 edgeX = float3(0, 0, 0);
     float3 edgeY = float3(0, 0, 0);
     
+    [unroll]
     for (int i = 0; i < 3; i++)
     {
+        [unroll]
         for (int j = 0; j < 3; j++)
         {
-            edgeX += samples[i][j] * sobelX[i][j];
-            edgeY += samples[i][j] * sobelY[i][j];
+            float3 localDiff = samples[i][j] - center;  // локальная разница
+            edgeX += localDiff * sobelX[i][j];
+            edgeY += localDiff * sobelY[i][j];
         }
     }
     
-    float magnitude = length(edgeX) + length(edgeY);
-    float edgeStrength = saturate(magnitude * 2.0f);
+   
+    float magnitude = sqrt(dot(edgeX, edgeX) + dot(edgeY, edgeY));
+    
+    // Множитель 0.15 вместо 2.0 - сильно снижаем чувствительность
+    float edgeStrength = saturate(magnitude * 0.25f);
+    
+    float lowThreshold  = 0.25f;
+    float highThreshold = 0.55f;
+    float edge = smoothstep(lowThreshold, highThreshold, edgeStrength);
     
     float4 albedo = g_AlbedoTexture.Sample(g_Sampler, input.uv);
     float3 result = albedo.rgb;
-    float3 edgeColor = float3(1.0f, 1.0f, 1.0f);
     
-    float threshold = 0.15f;
-    float edge = smoothstep(threshold, threshold + 0.2f, edgeStrength);
-    result = lerp(result, edgeColor, edge);
+    float3 edgeColor = float3(0.7f, 0.75f, 0.8f);
+    
+    float edgeAmount = edge * 0.7f;
+    
+    result = lerp(result, edgeColor, edgeAmount);
+    
+    result = saturate(result);
     
     return float4(result, 1.0f);
 }
 float4 PS_Test(PSInput input) : SV_TARGET
 {
-    // Красный градиент - если вы видите его на всем экране, то проблема в чтении GBuffer
     return float4(input.uv.x, input.uv.y, 0.0f, 1.0f);
 }
 )";
