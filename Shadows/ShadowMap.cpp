@@ -132,8 +132,7 @@ void ShadowMapSystem::UpdateCascades(const XMMATRIX& lightView, const XMMATRIX& 
     XMStoreFloat3(&lightPosFloat, lightPos);
     m_cbData.lightPos = XMFLOAT4(lightPosFloat.x, lightPosFloat.y, lightPosFloat.z, 1.0f);
 
-    // Увеличиваем orthoSize для Sponza
-    float orthoSize[4] = { 30.0f, 50.0f, 80.0f, 120.0f };
+    float orthoSize[4] = { 30.f, 50.f, 80.f, 120.f };
     XMMATRIX lightProj;
     for (int i = 0; i < CASCADE_COUNT; ++i) {
         lightProj = XMMatrixOrthographicOffCenterLH(

@@ -141,6 +141,7 @@ private:
 
     float m_lightIntensity = 1.0f;  // Текущая интенсивность
     float m_lightIntensityStep = 0.1f;  // Шаг изменения
+    UINT m_debugMode = 0;
 
     // Animation
     float m_textureAnimTime = 0.0f;

@@ -277,12 +277,22 @@ struct VSInput {
 struct VSOutput {
     float4 position : SV_POSITION;
 };
+
 cbuffer ShadowCB : register(b0) {
-    float4x4 lightViewProj;
+    float4x4 lightViewProj[4];
+    float4   cascadeSplits;
+    float4   lightDirection;
+    float4   shadowBias;
+    float4   textureSize;
+    float4   cameraPos;
+    float4   lightPos;
 };
+
+uint gCascadeIndex : register(b1);
+
 VSOutput main(VSInput input) {
     VSOutput output;
-    output.position = mul(float4(input.position, 1.0), lightViewProj);
+    output.position = mul(float4(input.position, 1.0), lightViewProj[gCascadeIndex]);
     return output;
 }
 )";
@@ -300,14 +310,24 @@ VSOutput main(VSInput input) {
         ThrowIfFailed(hr, "Compile shadow VS");
     }
 
-    D3D12_ROOT_PARAMETER rootParams[1];
+    // === Root signature: CBV(b0) + 32bit constants(b1) ===
+    D3D12_ROOT_PARAMETER rootParams[2] = {};
+
+    // b0 — ShadowCB
     rootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     rootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
     rootParams[0].Descriptor.ShaderRegister = 0;
     rootParams[0].Descriptor.RegisterSpace = 0;
 
+    // b1 — root constant (uint cascadeIndex)
+    rootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    rootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    rootParams[1].Constants.ShaderRegister = 1;
+    rootParams[1].Constants.RegisterSpace = 0;
+    rootParams[1].Constants.Num32BitValues = 1;
+
     D3D12_ROOT_SIGNATURE_DESC rootSigDesc = {};
-    rootSigDesc.NumParameters = 1;
+    rootSigDesc.NumParameters = 2;
     rootSigDesc.pParameters = rootParams;
     rootSigDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
@@ -384,12 +404,38 @@ bool D3D12App::Initialize(HWND hwnd) {
             m_shadowMapSystem->GetSRV()
         );
 
-        // Копируем дескриптор SRV тени в комбинированный хип RenderingSystem
+        // Копируем дескриптор SRV тени в комбинированный heap RenderingSystem (индекс 3)
         D3D12_CPU_DESCRIPTOR_HANDLE destCpuHandle = m_renderingSystem->GetCombinedSrvHeap()->GetCPUDescriptorHandleForHeapStart();
         destCpuHandle.ptr += GBuffer::GB_COUNT * m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
         D3D12_CPU_DESCRIPTOR_HANDLE srcCpuHandle = m_shadowMapSystem->GetSRVHeap()->GetCPUDescriptorHandleForHeapStart();
         m_device->CopyDescriptorsSimple(1, destCpuHandle, srcCpuHandle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+        // Загружаем 3 roof-текстуры (заменители тени для разных каскадов)
+        ThrowIfFailed(m_commandAllocators[0]->Reset(), "Reset allocator for roof textures");
+        ThrowIfFailed(m_commandList->Reset(m_commandAllocators[0].Get(), nullptr), "Reset list for roof textures");
+
+        const std::string roofPaths[RenderingSystem::ROOF_TEXTURE_COUNT] = {
+            "assets/textures/sponza_fabric_diff.tga",        // индекс 0 — базовая ткань (каскады 0 и 3)
+            "assets/textures/sponza_fabric_blue_diff.tga",   // индекс 1 — синяя (каскад 1)
+            "assets/textures/sponza_fabric_green_diff.tga"   // индекс 2 — зелёная (каскад 2)
+        };
+
+        m_renderingSystem->LoadRoofTextures(
+            m_device.Get(),
+            m_commandList.Get(),
+            roofPaths
+        );
+
+        ThrowIfFailed(m_commandList->Close(), "Close roof textures list");
+        ID3D12CommandList* roofLists[] = { m_commandList.Get() };
+        m_commandQueue->ExecuteCommandLists(1, roofLists);
+        WaitForGpu();
+
+        OutputDebugStringA("[D3D12App] 3 roof textures loaded\n");
+        WaitForGpu();
+
+        OutputDebugStringA("[D3D12App] Roof texture loaded\n");
 
         // Загружаем модель
         ModelData model = ModelLoader::LoadOBJ("assets/sponza.obj", "assets");
@@ -595,32 +641,29 @@ void D3D12App::RenderShadowMapPass(ID3D12GraphicsCommandList* cmdList) {
         return;
     }
 
-    // Проверка геометрии
     UINT totalIndices = 0;
     for (UINT j = 0; j < (UINT)m_materials.size(); j++) {
-        if (m_materialIndexCount[j] > 0) {
-            totalIndices += m_materialIndexCount[j];
-        }
+        if (m_materialIndexCount[j] > 0) totalIndices += m_materialIndexCount[j];
     }
-
     if (totalIndices == 0) {
         OutputDebugStringA("[ShadowPass] ERROR: No indices to render!\n");
         return;
     }
-
     if (m_vertexBufferView.BufferLocation == 0 || m_indexBufferView.BufferLocation == 0) {
         OutputDebugStringA("[ShadowPass] ERROR: Vertex or Index buffer is null!\n");
         return;
     }
 
-    // Свет сверху
+    // --- Свет сверху ---
     XMMATRIX lightView = XMMatrixLookAtLH(
         XMVectorSet(0.0f, 50.0f, 0.0f, 1.0f),
         XMVectorSet(0.0f, 0.0f, 0.0f, 1.0f),
         XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f)
     );
 
-    // Ортографическая проекция
+    // --- Каскады: разные orthoSize для каждого каскада ---
+    // Внимание: здесь мы передаём только lightView и near/far,
+    // а per-cascade projection строится внутри UpdateCascades.
     float orthoSize = 60.0f;
     XMMATRIX lightProj = XMMatrixOrthographicOffCenterLH(
         -orthoSize, orthoSize,
@@ -629,7 +672,7 @@ void D3D12App::RenderShadowMapPass(ID3D12GraphicsCommandList* cmdList) {
     );
 
     XMFLOAT3 camPos = m_camera.GetPosition();
-    m_shadowMapSystem->UpdateCascades(lightView, lightProj, camPos, 0.1f, 100.0f);
+    m_shadowMapSystem->UpdateCascades(lightView, lightProj, camPos, 0.1f, 40.0f);
 
     ID3D12Resource* shadowResource = m_shadowMapSystem->GetDepthResource();
     if (!shadowResource) {
@@ -637,7 +680,7 @@ void D3D12App::RenderShadowMapPass(ID3D12GraphicsCommandList* cmdList) {
         return;
     }
 
-    // Переход из PIXEL_SHADER_RESOURCE в DEPTH_WRITE
+    // --- Переход в DEPTH_WRITE ---
     D3D12_RESOURCE_BARRIER barrier = {};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     barrier.Transition.pResource = shadowResource;
@@ -667,11 +710,11 @@ void D3D12App::RenderShadowMapPass(ID3D12GraphicsCommandList* cmdList) {
     cmdList->IASetIndexBuffer(&m_indexBufferView);
     cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-    cmdList->SetGraphicsRootConstantBufferView(0, m_shadowMapSystem->GetConstantBuffer()->GetGPUVirtualAddress());
+    // CBV с массивом матриц — один раз
+    cmdList->SetGraphicsRootConstantBufferView(
+        0, m_shadowMapSystem->GetConstantBuffer()->GetGPUVirtualAddress());
 
-    // ============================================
-    // РЕНДЕРИМ ВСЕ КАСКАДЫ
-    // ============================================
+    // --- Рендерим каждый каскад в свой слой ---
     for (int cascade = 0; cascade < ShadowMapSystem::CASCADE_COUNT; ++cascade) {
         D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = m_shadowMapSystem->GetDSVForCascade(cascade);
         if (dsvHandle.ptr == 0) {
@@ -682,6 +725,10 @@ void D3D12App::RenderShadowMapPass(ID3D12GraphicsCommandList* cmdList) {
         cmdList->ClearDepthStencilView(dsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
         cmdList->OMSetRenderTargets(0, nullptr, FALSE, &dsvHandle);
 
+        // *** КЛЮЧЕВОЕ: передаём индекс каскада как root constant ***
+        UINT cascadeIdx = (UINT)cascade;
+        cmdList->SetGraphicsRoot32BitConstant(1, cascadeIdx, 0);
+
         for (UINT j = 0; j < (UINT)m_materials.size(); j++) {
             if (m_materialIndexCount[j] > 0) {
                 cmdList->DrawIndexedInstanced(m_materialIndexCount[j], 1,
@@ -690,7 +737,7 @@ void D3D12App::RenderShadowMapPass(ID3D12GraphicsCommandList* cmdList) {
         }
     }
 
-    // Возвращаем в состояние PIXEL_SHADER_RESOURCE
+    // --- Возвращаем в SRV ---
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_DEPTH_WRITE;
     barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
     cmdList->ResourceBarrier(1, &barrier);
@@ -863,6 +910,15 @@ void D3D12App::OnKeyDown(WPARAM wParam) {
     case '0':
         m_lightIntensity = 1.0f;
         OutputDebugStringA("Light Intensity Reset to 1.0\n");
+        break;
+    case 'C': // переключение режима отладки каскадов
+        m_debugMode = (m_debugMode + 1) % 3;
+        m_renderingSystem->SetDebugMode(m_debugMode);
+        {
+            char buf[64];
+            sprintf_s(buf, "Debug mode: %u\n", m_debugMode);
+            OutputDebugStringA(buf);
+        }
         break;
     }
 }

@@ -142,8 +142,8 @@ void RenderingSystem::SetShadowResources(ID3D12Resource* shadowCB, D3D12_GPU_DES
 }
 
 void RenderingSystem::CreateCombinedSrvHeap(ID3D12Device* device) {
-    // GBuffer (3) + ShadowMap (1)
-    UINT numDescriptors = GBuffer::GB_COUNT + 1;
+    // GBuffer (3) + ShadowMap (1) + RoofTextures (3)
+    UINT numDescriptors = GBuffer::GB_COUNT + 1 + ROOF_TEXTURE_COUNT; // = 7
     D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
     srvHeapDesc.NumDescriptors = numDescriptors;
     srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
@@ -246,11 +246,16 @@ void RenderingSystem::CreateLightingPassPipeline(ID3D12Device* device) {
     )";
 
     static const char* psCode = R"(
-        Texture2D<float4> AlbedoTex : register(t0);
-        Texture2D<float4> WorldPosTex : register(t1);
-        Texture2D<float4> NormalTex : register(t2);
+        Texture2D<float4> AlbedoTex    : register(t0);
+        Texture2D<float4> WorldPosTex  : register(t1);
+        Texture2D<float4> NormalTex    : register(t2);
         Texture2DArray<float> ShadowMap : register(t3);
-        SamplerState ShadowSampler : register(s0);
+        Texture2D<float4> RoofTex0     : register(t4);   // sponza_fabric_diff
+        Texture2D<float4> RoofTex1     : register(t5);   // sponza_fabric_blue_diff
+        Texture2D<float4> RoofTex2     : register(t6);   // sponza_fabric_green_diff
+
+        SamplerState ShadowSampler : register(s0);   // CLAMP — для shadow map
+        SamplerState RoofSampler   : register(s1);   // WRAP  — для roof-текстур
 
         struct LightData {
             float4 position_type;
@@ -262,7 +267,8 @@ void RenderingSystem::CreateLightingPassPipeline(ID3D12Device* device) {
         cbuffer LightCB : register(b0) {
             LightData lights[16];
             uint lightCount;
-            float3 padding;
+            uint debugMode;
+            float2 padding;
         }
 
         cbuffer ShadowCB : register(b1) {
@@ -275,66 +281,156 @@ void RenderingSystem::CreateLightingPassPipeline(ID3D12Device* device) {
             float4 lightPos;
         }
 
-        float CalculateShadow(float3 worldPos, int cascadeIndex) {
+        static const float3 kCascadeColors[4] = {
+            float3(1.0, 0.2, 0.2),
+            float3(0.2, 1.0, 0.2),
+            float3(0.2, 0.4, 1.0),
+            float3(1.0, 1.0, 0.2)
+        };
+
+        // Возвращает цвет roof-текстуры для текущего каскада.
+        // Каскад 0 и 3 — базовая ткань, 1 — синяя, 2 — зелёная.
+        float3 SampleRoofTexture(int cascadeIndex, float2 uv) {
+            if (cascadeIndex == 1) {
+                return RoofTex1.Sample(RoofSampler, uv).rgb;
+            }
+            else if (cascadeIndex == 2) {
+                return RoofTex2.Sample(RoofSampler, uv).rgb;
+            }
+            else {
+                return RoofTex0.Sample(RoofSampler, uv).rgb;
+            }
+        }
+
+        float CalculateShadow(float3 worldPos, int cascadeIndex, out float2 outShadowUV) {
             float4 posInLightSpace = mul(float4(worldPos, 1.0), lightViewProj[cascadeIndex]);
             float3 projCoords = posInLightSpace.xyz / posInLightSpace.w;
             projCoords.x = projCoords.x * 0.5 + 0.5;
             projCoords.y = projCoords.y * -0.5 + 0.5;
-    
-            if (projCoords.x < 0.0 || projCoords.x > 1.0 || 
+
+            outShadowUV = projCoords.xy;
+
+            if (projCoords.x < 0.0 || projCoords.x > 1.0 ||
                 projCoords.y < 0.0 || projCoords.y > 1.0) {
                 return 1.0;
             }
-    
-            float shadowDepth = ShadowMap.Sample(ShadowSampler, float3(projCoords.xy, cascadeIndex));
-    
+
             float distToLight = length(worldPos - lightPos.xyz);
             float maxDist = 200.0f;
             float normalizedDist = saturate(distToLight / maxDist);
-    
+
             float bias = shadowBias.x;
-            return (normalizedDist - bias) <= shadowDepth ? 1.0 : 0.0;
+
+            float radius = float(cascadeIndex) * 1.5;
+            float2 texelSize = float2(textureSize.z, textureSize.w);
+
+            float shadow = 0.0;
+            const int PCF_RADIUS = 2;
+            int samples = 0;
+
+            for (int x = -PCF_RADIUS; x <= PCF_RADIUS; ++x) {
+                for (int y = -PCF_RADIUS; y <= PCF_RADIUS; ++y) {
+                    float2 offset = float2(x, y) * texelSize * radius;
+                    float shadowDepth = ShadowMap.Sample(
+                        ShadowSampler,
+                        float3(projCoords.xy + offset, cascadeIndex));
+                    shadow += (normalizedDist - bias) <= shadowDepth ? 1.0 : 0.0;
+                    samples++;
+                }
+            }
+
+            return shadow / float(samples);
+        }
+
+        int SelectCascade(float depthFromCam) {
+            int idx = 0;
+            if (depthFromCam > cascadeSplits.x) idx = 1;
+            if (depthFromCam > cascadeSplits.y) idx = 2;
+            if (depthFromCam > cascadeSplits.z) idx = 3;
+            return idx;
         }
 
         float4 main(float4 position : SV_POSITION) : SV_TARGET {
             int3 texPos = int3(position.xy, 0);
-            float4 albedo = AlbedoTex.Load(texPos);
-            float4 worldPos = WorldPosTex.Load(texPos);
+            float4 albedo     = AlbedoTex.Load(texPos);
+            float4 worldPos   = WorldPosTex.Load(texPos);
             float4 normalData = NormalTex.Load(texPos);
-    
+
             if (length(worldPos.xyz) < 0.001) {
                 return float4(0.0, 0.0, 0.0, 1.0);
             }
-    
+
             float3 N = normalize(normalData.xyz * 2.0 - 1.0);
             float3 V = normalize(cameraPos.xyz - worldPos.xyz);
-    
-            // Ambient
-            float3 finalColor = albedo.rgb * 0.15;
-    
-            // Выбор каскада и вычисление shadowFactor
+
             float depthFromCam = length(worldPos.xyz - cameraPos.xyz);
-            int cascadeIndex = 0;
-            if (depthFromCam > cascadeSplits.x) cascadeIndex = 1;
-            if (depthFromCam > cascadeSplits.y) cascadeIndex = 2;
-            if (depthFromCam > cascadeSplits.z) cascadeIndex = 3;
+            int cascadeIndex = SelectCascade(depthFromCam);
 
-            float shadowFactor = CalculateShadow(worldPos.xyz, cascadeIndex);
+            float2 shadowUV;
+            float shadowFactor = CalculateShadow(worldPos.xyz, cascadeIndex, shadowUV);
 
-            // Цикл по всем источникам света
+            // ============================================================
+            // РЕЖИМ 1: цветовая визуализация каскадов
+            // ============================================================
+            if (debugMode == 1) {
+                float3 cascadeColor = kCascadeColors[cascadeIndex];
+                float3 vis = lerp(albedo.rgb * 0.3, cascadeColor, 0.8);
+                vis *= lerp(0.4, 1.0, shadowFactor);
+                return float4(vis, 1.0);
+            }
+
+            // ============================================================
+            // РЕЖИМ 2: подсветка границ каскадов
+            // ============================================================
+            if (debugMode == 2) {
+                float blendWidth = 0.3;
+                float3 baseColor = albedo.rgb * (0.3 + 0.7 * shadowFactor);
+
+                float d0 = abs(depthFromCam - cascadeSplits.x);
+                float d1 = abs(depthFromCam - cascadeSplits.y);
+                float d2 = abs(depthFromCam - cascadeSplits.z);
+
+                float edge = 0.0;
+                if (d0 < blendWidth) edge = max(edge, 1.0 - d0 / blendWidth);
+                if (d1 < blendWidth) edge = max(edge, 1.0 - d1 / blendWidth);
+                if (d2 < blendWidth) edge = max(edge, 1.0 - d2 / blendWidth);
+
+                float3 edgeColor = float3(1.0, 0.0, 0.0);
+                float3 vis = lerp(baseColor, edgeColor, edge);
+                return float4(vis, 1.0);
+            }
+
+            // ============================================================
+            // ОБЫЧНЫЙ РЕЖИМ ОСВЕЩЕНИЯ
+            // ============================================================
+            float3 finalColor = albedo.rgb * 0.15;
+
+            // Сэмплим roof-текстуру, соответствующую каскаду.
+            // Тайлинг 6x6 — паттерн ткани повторяется.
+            float2 roofUV = shadowUV * 6.0;
+            float3 roofColor = SampleRoofTexture(cascadeIndex, roofUV);
+
             for (uint i = 0; i < lightCount; i++) {
                 uint type = (uint)lights[i].position_type.w;
                 float3 L;
                 float attenuation = 1.0;
                 float spotAtten = 1.0;
-                float3 lightColor = lights[i].color_intensity.rgb * lights[i].color_intensity.a;
-    
-                if (type == 1) { // Directional - применяем тени
+                float3 lightColor = lights[i].color_intensity.rgb *
+                                    lights[i].color_intensity.a;
+
+                if (type == 1) { // Directional — с тенями и roof-подмешиванием
                     L = normalize(-lights[i].direction.xyz);
                     float diffuse = saturate(dot(N, L));
-                    finalColor += lightColor * diffuse * attenuation * spotAtten * shadowFactor;
+
+                    float3 litColor = lightColor * diffuse;
+
+                    // Затенённая часть: roof-цвет, модулированный albedo
+                    // В разных каскадах — разная ткань (синяя/зелёная/базовая)
+                    float3 shadowColor = roofColor * albedo.rgb * 0.35;
+
+                    finalColor += lerp(shadowColor, litColor, shadowFactor);
                 }
-                else if (type == 0) { // Point - без теней
+                else if (type == 0) { // Point
                     float3 lightVec = lights[i].position_type.xyz - worldPos.xyz;
                     float dist = length(lightVec);
                     L = normalize(lightVec);
@@ -343,7 +439,7 @@ void RenderingSystem::CreateLightingPassPipeline(ID3D12Device* device) {
                     float diffuse = saturate(dot(N, L));
                     finalColor += lightColor * diffuse * attenuation * spotAtten;
                 }
-                else if (type == 2) { // Spot - без теней
+                else if (type == 2) { // Spot
                     float3 lightVec = lights[i].position_type.xyz - worldPos.xyz;
                     float dist = length(lightVec);
                     L = normalize(lightVec);
@@ -356,7 +452,7 @@ void RenderingSystem::CreateLightingPassPipeline(ID3D12Device* device) {
                     finalColor += lightColor * diffuse * attenuation * spotAtten;
                 }
             }
-    
+
             finalColor *= albedo.rgb;
             finalColor = pow(finalColor, float3(1.0/2.2, 1.0/2.2, 1.0/2.2));
             return float4(finalColor, 1.0);
@@ -376,11 +472,11 @@ void RenderingSystem::CreateLightingPassPipeline(ID3D12Device* device) {
     }
 
     // ============================================
-    // КОРНЕВАЯ СИГНАТУРА (без изменений)
+    // КОРНЕВАЯ СИГНАТУРА: 7 SRV
     // ============================================
     D3D12_DESCRIPTOR_RANGE descRange = {};
     descRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    descRange.NumDescriptors = 4;
+    descRange.NumDescriptors = 7;   // t0..t6: GBuffer(3) + ShadowMap(1) + RoofTex(3)
     descRange.BaseShaderRegister = 0;
     descRange.RegisterSpace = 0;
     descRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
@@ -401,34 +497,32 @@ void RenderingSystem::CreateLightingPassPipeline(ID3D12Device* device) {
     rootParams[2].Descriptor.ShaderRegister = 1;
     rootParams[2].Descriptor.RegisterSpace = 0;
 
-    // Обычный сэмплер для чтения (s0)
-    D3D12_STATIC_SAMPLER_DESC regularSampler = {};
-    regularSampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    regularSampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    regularSampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    regularSampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    regularSampler.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
-    regularSampler.ShaderRegister = 0;  // s0
-    regularSampler.RegisterSpace = 0;
-    regularSampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    D3D12_STATIC_SAMPLER_DESC shadowSamplerDesc = {};
+    shadowSamplerDesc.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    shadowSamplerDesc.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    shadowSamplerDesc.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    shadowSamplerDesc.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    shadowSamplerDesc.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+    shadowSamplerDesc.ShaderRegister = 0;
+    shadowSamplerDesc.RegisterSpace = 0;
+    shadowSamplerDesc.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
-    // Сэмплер сравнения для теней (s1) - пока не используется
-    D3D12_STATIC_SAMPLER_DESC shadowSampler = {};
-    shadowSampler.Filter = D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT;
-    shadowSampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
-    shadowSampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
-    shadowSampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
-    shadowSampler.ComparisonFunc = D3D12_COMPARISON_FUNC_LESS;
-    shadowSampler.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
-    shadowSampler.ShaderRegister = 1;  // s1
-    shadowSampler.RegisterSpace = 0;
-    shadowSampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    D3D12_STATIC_SAMPLER_DESC roofSamplerDesc = {};
+    roofSamplerDesc.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    roofSamplerDesc.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    roofSamplerDesc.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    roofSamplerDesc.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    roofSamplerDesc.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+    roofSamplerDesc.ShaderRegister = 1;
+    roofSamplerDesc.RegisterSpace = 0;
+    roofSamplerDesc.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_STATIC_SAMPLER_DESC samplers[] = { shadowSamplerDesc, roofSamplerDesc };
 
     D3D12_ROOT_SIGNATURE_DESC rootSigDesc = {};
     rootSigDesc.NumParameters = 3;
     rootSigDesc.pParameters = rootParams;
-    rootSigDesc.NumStaticSamplers = 1;
-    D3D12_STATIC_SAMPLER_DESC samplers[] = { regularSampler };
+    rootSigDesc.NumStaticSamplers = 2;
     rootSigDesc.pStaticSamplers = samplers;
     rootSigDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
@@ -439,7 +533,6 @@ void RenderingSystem::CreateLightingPassPipeline(ID3D12Device* device) {
     hr = device->CreateRootSignature(0, signature->GetBufferPointer(), signature->GetBufferSize(), IID_PPV_ARGS(&m_lightingRootSig));
     CheckHr(hr, "Failed to create lighting root sig");
 
-    // ... остальной код (Input Layout, PSO) без изменений ...
     D3D12_INPUT_ELEMENT_DESC inputDesc[] = {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
         { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
@@ -482,6 +575,9 @@ void RenderingSystem::Render(ID3D12GraphicsCommandList* cmdList,
     memset(m_lightCBData, 0, sizeof(LightBufferGPU));
     LightBufferGPU* lightData = reinterpret_cast<LightBufferGPU*>(m_lightCBData);
     lightData->lightCount = std::min((UINT)m_lights.size(), 16u);
+
+    lightData->debugMode = m_debugMode;
+
     for (UINT i = 0; i < lightData->lightCount; ++i) {
         const Light& light = m_lights[i];
         lightData->lights[i].position_type = light.GetAsFloat4();
@@ -729,4 +825,35 @@ void RenderingSystem::RenderShadowMapDebug(ID3D12GraphicsCommandList* cmdList,
     cmdList->IASetVertexBuffers(0, 1, &m_fullscreenVBView);
     cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
     cmdList->DrawInstanced(4, 1, 0, 0);
+}
+
+void RenderingSystem::LoadRoofTextures(ID3D12Device* device,
+    ID3D12GraphicsCommandList* cmdList,
+    const std::string paths[ROOF_TEXTURE_COUNT]) {
+    // Индексы 4, 5, 6 — после GBuffer[0..2] и ShadowMap[3]
+    D3D12_CPU_DESCRIPTOR_HANDLE baseHandle =
+        m_combinedSrvHeap->GetCPUDescriptorHandleForHeapStart();
+    baseHandle.ptr += (GBuffer::GB_COUNT + 1) * m_srvDescriptorSize;
+
+    for (UINT i = 0; i < ROOF_TEXTURE_COUNT; ++i) {
+        m_roofTextures[i] = TextureLoader::LoadTexture(device, cmdList, paths[i]);
+
+        D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = baseHandle;
+        cpuHandle.ptr += i * m_srvDescriptorSize;
+
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.Format = m_roofTextures[i].format;
+        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srvDesc.Texture2D.MipLevels = 1;
+        srvDesc.Texture2D.MostDetailedMip = 0;
+
+        device->CreateShaderResourceView(m_roofTextures[i].resource.Get(), &srvDesc, cpuHandle);
+
+        char buf[256];
+        sprintf_s(buf, "[RenderingSystem] Roof texture %u loaded: %s\n", i, paths[i].c_str());
+        OutputDebugStringA(buf);
+    }
+
+    m_roofTexturesLoaded = true;
 }

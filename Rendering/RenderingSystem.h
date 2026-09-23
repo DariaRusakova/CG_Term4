@@ -8,6 +8,7 @@
 #include "GBuffer.h"
 #include "Light.h"
 #include "../Model/Material.h"
+#include "../Texture/TextureLoader.h"
 #include "Shaders/DeferredLightPass.h"
 
 class RenderingSystem {
@@ -25,13 +26,19 @@ public:
         const Material* materials;
     };
 
+    static constexpr UINT ROOF_TEXTURE_COUNT = 3;
+
     RenderingSystem();
     ~RenderingSystem();
 
     void Initialize(ID3D12Device* device, UINT width, UINT height);
     void Resize(UINT width, UINT height);
 
-    // Новый метод для передачи ресурсов тени извне
+    // Загрузка 3 roof-текстур (заменителей тени) — по одной на каскадную зону
+    void LoadRoofTextures(ID3D12Device* device,
+        ID3D12GraphicsCommandList* cmdList,
+        const std::string paths[ROOF_TEXTURE_COUNT]);
+
     void SetShadowResources(ID3D12Resource* shadowCB, D3D12_GPU_DESCRIPTOR_HANDLE shadowSRV);
 
     void Render(ID3D12GraphicsCommandList* cmdList,
@@ -55,6 +62,9 @@ public:
         }
     }
 
+    void SetDebugMode(UINT mode) { m_debugMode = mode; }
+    UINT GetDebugMode() const { return m_debugMode; }
+
     void RenderShadowMapDebug(ID3D12GraphicsCommandList* cmdList,
         D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle);
 
@@ -67,6 +77,7 @@ private:
     void* m_lightCBData = nullptr;
     float m_globalIntensity = 1.0f;
     std::vector<float> m_originalIntensities;
+    UINT m_debugMode = 0;
 
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_lightingRootSig;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_lightingPSO;
@@ -79,7 +90,10 @@ private:
     std::unique_ptr<GBuffer> m_gbuffer;
     std::vector<Light> m_lights;
 
-    // Внешние ресурсы тени
+    // 3 roof-текстуры (заменители тени)
+    Texture m_roofTextures[ROOF_TEXTURE_COUNT];
+    bool m_roofTexturesLoaded = false;
+
     ID3D12Resource* m_externalShadowCB = nullptr;
     D3D12_GPU_DESCRIPTOR_HANDLE m_externalShadowSRV;
 
@@ -97,6 +111,7 @@ private:
     struct LightBufferGPU {
         LightDataGPU lights[16];
         UINT lightCount;
-        float padding[3];
+        UINT debugMode;
+        float padding[2];
     };
 };
