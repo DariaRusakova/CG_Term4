@@ -14,7 +14,6 @@
 using namespace DirectX;
 using Microsoft::WRL::ComPtr;
 
-// Вспомогательная функция
 inline void ThrowIfFailed(HRESULT hr, const char* errorMsg = "") {
     if (FAILED(hr)) {
         char buffer[512];
@@ -25,7 +24,6 @@ inline void ThrowIfFailed(HRESULT hr, const char* errorMsg = "") {
 }
 
 D3D12App::D3D12App() {
-    for (auto& ptr : m_cbvDataBegin) ptr = nullptr;
     m_fenceEvent = nullptr;
 }
 
@@ -37,22 +35,17 @@ void D3D12App::Shutdown() {
     WaitForGpu();
     if (m_fenceEvent) CloseHandle(m_fenceEvent);
 
-    // Освобождаем пост-процессинг систему
-    if (m_renderingSystem) {
-        m_renderingSystem.reset();
-    }
-
-    for (uint32_t i = 0; i < kFrameCount; ++i) {
-        if (m_constantBuffer[i] && m_cbvDataBegin[i]) {
-            m_constantBuffer[i]->Unmap(0, nullptr);
-            m_cbvDataBegin[i] = nullptr;
+    for (uint32_t f = 0; f < kFrameCount; ++f) {
+        for (UINT o = 0; o < kMaxObjects; ++o) {
+            if (m_constantBuffer[f][o] && m_cbvDataBegin[f][o]) {
+                m_constantBuffer[f][o]->Unmap(0, nullptr);
+                m_cbvDataBegin[f][o] = nullptr;
+            }
         }
     }
 }
 
-// ==============================================
-// Инициализация
-// ==============================================
+
 void D3D12App::EnableDebugLayer() {
 #ifdef _DEBUG
     ComPtr<ID3D12Debug> debugController;
@@ -66,11 +59,13 @@ void D3D12App::EnableDebugLayer() {
 void D3D12App::CreateDevice() {
     ComPtr<IDXGIFactory4> factory;
     ThrowIfFailed(CreateDXGIFactory1(IID_PPV_ARGS(&factory)), "CreateDXGIFactory1");
+
     ComPtr<IDXGIAdapter1> adapter;
     for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
         DXGI_ADAPTER_DESC1 desc;
         adapter->GetDesc1(&desc);
         if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) continue;
+
         if (SUCCEEDED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&m_device)))) {
             OutputDebugStringA("Device created\n");
             return;
@@ -83,46 +78,42 @@ void D3D12App::CreateCommandObjects() {
     D3D12_COMMAND_QUEUE_DESC queueDesc = {};
     queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
     ThrowIfFailed(m_device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&m_commandQueue)), "Create command queue");
+
     for (uint32_t i = 0; i < kFrameCount; ++i) {
         ThrowIfFailed(m_device->CreateCommandAllocator(
             D3D12_COMMAND_LIST_TYPE_DIRECT,
             IID_PPV_ARGS(&m_commandAllocators[i])), "Create allocator");
     }
+
     ThrowIfFailed(m_device->CreateCommandList(
         0, D3D12_COMMAND_LIST_TYPE_DIRECT,
         m_commandAllocators[0].Get(), nullptr,
         IID_PPV_ARGS(&m_commandList)), "Create command list");
+
     m_commandList->Close();
+
     ThrowIfFailed(m_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_fence)), "Create fence");
     m_fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
 }
 
 void D3D12App::CreateSwapChain(HWND hwnd) {
-    // Получаем реальный размер окна
-    RECT clientRect;
-    GetClientRect(hwnd, &clientRect);
-    UINT width = clientRect.right - clientRect.left;
-    UINT height = clientRect.bottom - clientRect.top;
-
-    if (width == 0 || height == 0) {
-        width = kWidth;
-        height = kHeight;
-    }
-
     ComPtr<IDXGIFactory4> factory;
     ThrowIfFailed(CreateDXGIFactory1(IID_PPV_ARGS(&factory)), "CreateDXGIFactory");
+
     DXGI_SWAP_CHAIN_DESC1 swapChainDesc = {};
     swapChainDesc.BufferCount = kFrameCount;
-    swapChainDesc.Width = width;    // Используем реальный размер
-    swapChainDesc.Height = height;  // Используем реальный размер
+    swapChainDesc.Width = kWidth;
+    swapChainDesc.Height = kHeight;
     swapChainDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     swapChainDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
     swapChainDesc.SampleDesc.Count = 1;
+
     ComPtr<IDXGISwapChain1> swapChain;
     ThrowIfFailed(factory->CreateSwapChainForHwnd(
         m_commandQueue.Get(), hwnd, &swapChainDesc,
         nullptr, nullptr, &swapChain), "CreateSwapChainForHwnd");
+
     ThrowIfFailed(swapChain.As(&m_swapChain), "QueryInterface swapchain");
 }
 
@@ -131,7 +122,9 @@ void D3D12App::CreateDescriptorHeaps() {
     rtvHeapDesc.NumDescriptors = kFrameCount;
     rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
     ThrowIfFailed(m_device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&m_rtvHeap)), "Create RTV heap");
+
     m_rtvDescriptorSize = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+
     D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = m_rtvHeap->GetCPUDescriptorHandleForHeapStart();
     for (uint32_t i = 0; i < kFrameCount; ++i) {
         ThrowIfFailed(m_swapChain->GetBuffer(i, IID_PPV_ARGS(&m_renderTargets[i])), "Get swapchain buffer");
@@ -141,254 +134,80 @@ void D3D12App::CreateDescriptorHeaps() {
 }
 
 void D3D12App::CreateDepthStencil() {
-    // Получаем реальный размер окна
-    RECT clientRect;
-    GetClientRect(GetActiveWindow(), &clientRect);
-    UINT width = clientRect.right - clientRect.left;
-    UINT height = clientRect.bottom - clientRect.top;
-
-    if (width == 0 || height == 0) {
-        width = kWidth;
-        height = kHeight;
-    }
-
     D3D12_RESOURCE_DESC depthDesc = {};
     depthDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    depthDesc.Width = width;    // Используем реальный размер
-    depthDesc.Height = height;  // Используем реальный размер
+    depthDesc.Width = kWidth;
+    depthDesc.Height = kHeight;
     depthDesc.DepthOrArraySize = 1;
     depthDesc.MipLevels = 1;
     depthDesc.Format = DXGI_FORMAT_D32_FLOAT;
     depthDesc.SampleDesc.Count = 1;
     depthDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+
     D3D12_CLEAR_VALUE clearValue = {};
     clearValue.Format = DXGI_FORMAT_D32_FLOAT;
     clearValue.DepthStencil.Depth = 1.0f;
+
     D3D12_HEAP_PROPERTIES heapProps = {};
     heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+
     ThrowIfFailed(m_device->CreateCommittedResource(
         &heapProps, D3D12_HEAP_FLAG_NONE, &depthDesc,
         D3D12_RESOURCE_STATE_DEPTH_WRITE, &clearValue,
         IID_PPV_ARGS(&m_depthStencil)), "Create depth stencil");
+
     D3D12_DESCRIPTOR_HEAP_DESC dsvHeapDesc = {};
     dsvHeapDesc.NumDescriptors = 1;
     dsvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
     ThrowIfFailed(m_device->CreateDescriptorHeap(&dsvHeapDesc, IID_PPV_ARGS(&m_dsvHeap)), "Create DSV heap");
+
     m_device->CreateDepthStencilView(m_depthStencil.Get(), nullptr,
         m_dsvHeap->GetCPUDescriptorHandleForHeapStart());
 }
 
 void D3D12App::CreateSRVHeap() {
-    // Выделяем дескрипторы для всех текстур модели + IBL текстуры
-    // m_textures содержит все текстуры модели + IBL
-    UINT numDescriptors = (UINT)m_textures.size();
+    m_srvHeapCapacity = 64;
+
     D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
-    srvHeapDesc.NumDescriptors = numDescriptors;
+    srvHeapDesc.NumDescriptors = m_srvHeapCapacity;
     srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-    ThrowIfFailed(m_device->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&m_srvHeap)));
-    m_srvDescriptorSize = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-    D3D12_CPU_DESCRIPTOR_HANDLE srvHandle = m_srvHeap->GetCPUDescriptorHandleForHeapStart();
-    for (size_t i = 0; i < m_textures.size(); i++) {
-        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-        srvDesc.Format = m_textures[i].format;
-        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srvDesc.Texture2D.MipLevels = m_textures[i].mipLevels;
-        srvDesc.Texture2D.MostDetailedMip = 0;
-        srvDesc.Texture2D.PlaneSlice = 0;
-        srvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
-        m_device->CreateShaderResourceView(m_textures[i].resource.Get(), &srvDesc, srvHandle);
-        srvHandle.ptr += m_srvDescriptorSize;
-    }
-}
 
-void D3D12App::CreateBuffersFromData() {
-    const UINT vertexBufferSize = sizeof(Vertex) * (UINT)m_vertices.size();
-    ComPtr<ID3D12Resource> vertexUploadBuffer;
-    D3D12_HEAP_PROPERTIES uploadHeapProps = {};
-    uploadHeapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
-    D3D12_RESOURCE_DESC bufferDesc = {};
-    bufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    bufferDesc.Width = vertexBufferSize;
-    bufferDesc.Height = 1;
-    bufferDesc.DepthOrArraySize = 1;
-    bufferDesc.MipLevels = 1;
-    bufferDesc.Format = DXGI_FORMAT_UNKNOWN;
-    bufferDesc.SampleDesc.Count = 1;
-    bufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    ThrowIfFailed(m_device->CreateCommittedResource(
-        &uploadHeapProps, D3D12_HEAP_FLAG_NONE, &bufferDesc,
-        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-        IID_PPV_ARGS(&vertexUploadBuffer)), "Create vertex upload buffer");
-    void* data;
-    ThrowIfFailed(vertexUploadBuffer->Map(0, nullptr, &data), "Map vertex upload buffer");
-    memcpy(data, m_vertices.data(), vertexBufferSize);
-    vertexUploadBuffer->Unmap(0, nullptr);
-    D3D12_HEAP_PROPERTIES defaultHeapProps = {};
-    defaultHeapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
-    ThrowIfFailed(m_device->CreateCommittedResource(
-        &defaultHeapProps, D3D12_HEAP_FLAG_NONE, &bufferDesc,
-        D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
-        IID_PPV_ARGS(&m_vertexBuffer)), "Create vertex buffer");
-    ThrowIfFailed(m_commandAllocators[0]->Reset(), "Reset allocator");
-    ThrowIfFailed(m_commandList->Reset(m_commandAllocators[0].Get(), nullptr), "Reset list");
-    m_commandList->CopyResource(m_vertexBuffer.Get(), vertexUploadBuffer.Get());
-    D3D12_RESOURCE_BARRIER barrier = {};
-    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    barrier.Transition.pResource = m_vertexBuffer.Get();
-    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
-    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    m_commandList->ResourceBarrier(1, &barrier);
-    ThrowIfFailed(m_commandList->Close(), "Close vertex copy list");
-    ID3D12CommandList* lists[] = { m_commandList.Get() };
-    m_commandQueue->ExecuteCommandLists(1, lists);
-    WaitForGpu();
-    m_vertexBufferView.BufferLocation = m_vertexBuffer->GetGPUVirtualAddress();
-    m_vertexBufferView.StrideInBytes = sizeof(Vertex);
-    m_vertexBufferView.SizeInBytes = vertexBufferSize;
+    ThrowIfFailed(m_device->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&m_srvHeap)),
+        "Create SRV heap");
 
-    // Индексный буфер
-    const UINT indexBufferSize = sizeof(uint32_t) * (UINT)m_indices.size();
-    m_indexCount = (UINT)m_indices.size();
-    bufferDesc.Width = indexBufferSize;
-    ThrowIfFailed(m_device->CreateCommittedResource(
-        &uploadHeapProps, D3D12_HEAP_FLAG_NONE, &bufferDesc,
-        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-        IID_PPV_ARGS(&vertexUploadBuffer)), "Create index upload buffer");
-    ThrowIfFailed(vertexUploadBuffer->Map(0, nullptr, &data), "Map index upload buffer");
-    memcpy(data, m_indices.data(), indexBufferSize);
-    vertexUploadBuffer->Unmap(0, nullptr);
-    ThrowIfFailed(m_device->CreateCommittedResource(
-        &defaultHeapProps, D3D12_HEAP_FLAG_NONE, &bufferDesc,
-        D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
-        IID_PPV_ARGS(&m_indexBuffer)), "Create index buffer");
-    ThrowIfFailed(m_commandAllocators[0]->Reset(), "Reset allocator for index");
-    ThrowIfFailed(m_commandList->Reset(m_commandAllocators[0].Get(), nullptr), "Reset list for index");
-    m_commandList->CopyResource(m_indexBuffer.Get(), vertexUploadBuffer.Get());
-    barrier.Transition.pResource = m_indexBuffer.Get();
-    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_INDEX_BUFFER;
-    m_commandList->ResourceBarrier(1, &barrier);
-    ThrowIfFailed(m_commandList->Close(), "Close index copy list");
-    lists[0] = m_commandList.Get();
-    m_commandQueue->ExecuteCommandLists(1, lists);
-    WaitForGpu();
-    m_indexBufferView.BufferLocation = m_indexBuffer->GetGPUVirtualAddress();
-    m_indexBufferView.Format = DXGI_FORMAT_R32_UINT;
-    m_indexBufferView.SizeInBytes = indexBufferSize;
+    m_srvDescriptorSize = m_device->GetDescriptorHandleIncrementSize(
+        D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+    m_srvHeapUsed = 0;
 }
 
 void D3D12App::CreateConstantBuffers() {
-    for (uint32_t i = 0; i < kFrameCount; ++i) {
-        D3D12_HEAP_PROPERTIES heapProps = {};
-        heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
-        D3D12_RESOURCE_DESC bufferDesc = {};
-        bufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-        bufferDesc.Width = sizeof(SceneConstantBuffer);
-        bufferDesc.Height = 1;
-        bufferDesc.DepthOrArraySize = 1;
-        bufferDesc.MipLevels = 1;
-        bufferDesc.Format = DXGI_FORMAT_UNKNOWN;
-        bufferDesc.SampleDesc.Count = 1;
-        bufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-        ThrowIfFailed(m_device->CreateCommittedResource(
-            &heapProps, D3D12_HEAP_FLAG_NONE, &bufferDesc,
-            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-            IID_PPV_ARGS(&m_constantBuffer[i])), "Create constant buffer");
-        D3D12_RANGE readRange = { 0, 0 };
-        ThrowIfFailed(m_constantBuffer[i]->Map(0, &readRange, &m_cbvDataBegin[i]), "Map constant buffer");
+    for (uint32_t f = 0; f < kFrameCount; ++f) {
+        for (UINT o = 0; o < kMaxObjects; ++o) {
+            D3D12_HEAP_PROPERTIES heapProps = {};
+            heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
+
+            D3D12_RESOURCE_DESC bufferDesc = {};
+            bufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+            bufferDesc.Width = sizeof(SceneConstantBuffer);
+            bufferDesc.Height = 1;
+            bufferDesc.DepthOrArraySize = 1;
+            bufferDesc.MipLevels = 1;
+            bufferDesc.Format = DXGI_FORMAT_UNKNOWN;
+            bufferDesc.SampleDesc.Count = 1;
+            bufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+            ThrowIfFailed(m_device->CreateCommittedResource(
+                &heapProps, D3D12_HEAP_FLAG_NONE, &bufferDesc,
+                D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                IID_PPV_ARGS(&m_constantBuffer[f][o])), "Create CB");
+
+            D3D12_RANGE rr = { 0, 0 };
+            ThrowIfFailed(m_constantBuffer[f][o]->Map(0, &rr, &m_cbvDataBegin[f][o]),
+                "Map CB");
+        }
     }
-}
-
-// Создание PSO для рендеринга теней (только глубина)
-void D3D12App::CreateShadowPassPipelineState() {
-    static const char* shadowVS = R"(
-struct VSInput {
-    float3 position : POSITION;
-};
-struct VSOutput {
-    float4 position : SV_POSITION;
-};
-cbuffer ShadowCB : register(b0) {
-    float4x4 lightViewProj;
-};
-VSOutput main(VSInput input) {
-    VSOutput output;
-    output.position = mul(float4(input.position, 1.0), lightViewProj);
-    return output;
-}
-)";
-
-    ComPtr<ID3DBlob> vs, error;
-    UINT compileFlags = 0;
-#ifdef _DEBUG
-    compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
-#endif
-
-    HRESULT hr = D3DCompile(shadowVS, strlen(shadowVS),
-        "ShadowVS", nullptr, nullptr, "main", "vs_5_0", compileFlags, 0, &vs, &error);
-    if (FAILED(hr)) {
-        if (error) OutputDebugStringA((char*)error->GetBufferPointer());
-        ThrowIfFailed(hr, "Compile shadow VS");
-    }
-
-    D3D12_ROOT_PARAMETER rootParams[1];
-    rootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-    rootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-    rootParams[0].Descriptor.ShaderRegister = 0;
-    rootParams[0].Descriptor.RegisterSpace = 0;
-
-    D3D12_ROOT_SIGNATURE_DESC rootSigDesc = {};
-    rootSigDesc.NumParameters = 1;
-    rootSigDesc.pParameters = rootParams;
-    rootSigDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
-
-    ComPtr<ID3DBlob> signature;
-    hr = D3D12SerializeRootSignature(&rootSigDesc, D3D_ROOT_SIGNATURE_VERSION_1, &signature, &error);
-    if (FAILED(hr)) {
-        if (error) OutputDebugStringA((char*)error->GetBufferPointer());
-        ThrowIfFailed(hr, "Serialize shadow root sig");
-    }
-
-    hr = m_device->CreateRootSignature(0, signature->GetBufferPointer(), signature->GetBufferSize(),
-        IID_PPV_ARGS(&m_shadowRootSig));
-    ThrowIfFailed(hr, "Create shadow root sig");
-
-    D3D12_INPUT_ELEMENT_DESC inputDesc[] = {
-        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
-    };
-
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
-    psoDesc.InputLayout = { inputDesc, _countof(inputDesc) };
-    psoDesc.pRootSignature = m_shadowRootSig.Get();
-    psoDesc.VS = { vs->GetBufferPointer(), vs->GetBufferSize() };
-    psoDesc.PS = { nullptr, 0 };
-
-    psoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-    psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
-    psoDesc.RasterizerState.FrontCounterClockwise = FALSE;
-    psoDesc.RasterizerState.DepthBias = 100000;
-    psoDesc.RasterizerState.DepthBiasClamp = 0.0f;
-    psoDesc.RasterizerState.SlopeScaledDepthBias = 1.0f;
-    psoDesc.RasterizerState.DepthClipEnable = TRUE;
-
-    psoDesc.DepthStencilState.DepthEnable = TRUE;
-    psoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
-    psoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
-    psoDesc.DepthStencilState.StencilEnable = FALSE;
-
-    psoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = 0;
-    psoDesc.SampleMask = UINT_MAX;
-    psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    psoDesc.NumRenderTargets = 0;
-    psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
-    psoDesc.SampleDesc.Count = 1;
-    psoDesc.SampleDesc.Quality = 0;
-
-    hr = m_device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_shadowPSO));
-    ThrowIfFailed(hr, "Create shadow PSO");
 }
 
 bool D3D12App::Initialize(HWND hwnd) {
@@ -400,182 +219,82 @@ bool D3D12App::Initialize(HWND hwnd) {
         CreateDescriptorHeaps();
         CreateDepthStencil();
 
-        // Получаем реальный размер окна
-        RECT clientRect;
-        GetClientRect(hwnd, &clientRect);
-        m_windowWidth = clientRect.right - clientRect.left;
-        m_windowHeight = clientRect.bottom - clientRect.top;
-
-        if (m_windowWidth == 0 || m_windowHeight == 0) {
-            m_windowWidth = kWidth;
-            m_windowHeight = kHeight;
-        }
-
-        // ================================================
-        // 1. ИНИЦИАЛИЗАЦИЯ СИСТЕМЫ ТЕНЕЙ
-        // ================================================
-        m_shadowMapSystem = std::make_unique<ShadowMapSystem>();
-        m_shadowMapSystem->Initialize(m_device.Get());
-
-        // ================================================
-        // 2. СОЗДАНИЕ ROOT SIGNATURE И PSO
-        // ================================================
         CreateGeometryPassRootSignature();
         CreateGeometryPassPipelineState();
-        CreateShadowPassPipelineState();
 
-        // ================================================
-        // 3. ИНИЦИАЛИЗАЦИЯ СИСТЕМЫ РЕНДЕРИНГА
-        // ================================================
         m_renderingSystem = std::make_unique<RenderingSystem>();
+        m_renderingSystem->Initialize(m_device.Get(), kWidth, kHeight);
 
-        GetClientRect(hwnd, &clientRect);
-        UINT windowWidth = clientRect.right - clientRect.left;
-        UINT windowHeight = clientRect.bottom - clientRect.top;
+        CreateSRVHeap();
 
-        m_renderingSystem->Initialize(m_device.Get(), windowWidth, windowHeight);
-        m_renderingSystem->SetRenderTargetSize(windowWidth, windowHeight);
+        ThrowIfFailed(m_commandAllocators[0]->Reset());
+        ThrowIfFailed(m_commandList->Reset(m_commandAllocators[0].Get(), nullptr));
 
-        // Передаем ресурсы тени в RenderingSystem
-        m_renderingSystem->SetShadowResources(
-            m_shadowMapSystem->GetConstantBuffer(),
-            m_shadowMapSystem->GetSRV()
-        );
+        {
+            MaterialPaths paths;
+            paths.albedo = "assets/Cerberus_by_Andrew_Maximov/Textures/Cerberus_A.jpg";
+            paths.normal = "assets/Cerberus_by_Andrew_Maximov/Textures/Cerberus_N.jpg";
+            paths.roughness = "assets/Cerberus_by_Andrew_Maximov/Textures/Cerberus_R.jpg";
+            paths.metallic = "assets/Cerberus_by_Andrew_Maximov/Textures/Cerberus_M.jpg";
+            paths.ao = "";  
 
-        // ================================================
-        // КОПИРОВАНИЕ ДЕСКРИПТОРА ТЕНИ
-        // ================================================
-        D3D12_CPU_DESCRIPTOR_HANDLE destCpuHandle = m_renderingSystem->GetCombinedSrvHeap()->GetCPUDescriptorHandleForHeapStart();
-        UINT srvDescriptorSize = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-        destCpuHandle.ptr += GBuffer::GB_COUNT * srvDescriptorSize;
+            SceneObject cerberus;
+            XMFLOAT4X4 world;
+            XMStoreFloat4x4(&world, XMMatrixTranslation(-1.0f, 0.0f, 0.0f));
 
-        D3D12_CPU_DESCRIPTOR_HANDLE srcCpuHandle = m_shadowMapSystem->GetSRVHeap()->GetCPUDescriptorHandleForHeapStart();
-
-        D3D12_CPU_DESCRIPTOR_HANDLE srcHandles[] = { srcCpuHandle };
-        D3D12_CPU_DESCRIPTOR_HANDLE destHandles[] = { destCpuHandle };
-
-        m_device->CopyDescriptors(
-            1,
-            destHandles,
-            nullptr,
-            1,
-            srcHandles,
-            nullptr,
-            D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV
-        );
-
-        // ================================================
-        // 4. ИНИЦИАЛИЗАЦИЯ POST-PROCESSING СИСТЕМЫ
-        // ================================================
-        auto postProcessSystem = std::make_unique<PostProcessSystem>();
-        postProcessSystem->Initialize(m_device.Get(), kWidth, kHeight);
-        m_renderingSystem->SetPostProcessSystem(std::move(postProcessSystem));
-
-        // ================================================
-        // 5. ЗАГРУЗКА МОДЕЛИ И ТЕКСТУР
-        // ================================================
-        ModelData model = ModelLoader::LoadOBJ("assets/sponza.obj", "assets");
-        m_vertices = model.vertices;
-        m_indices = model.indices;
-        m_materials = model.materials;
-        m_materialStartIndex = model.materialStartIndex;
-        m_materialIndexCount = model.materialIndexCount;
-
-        // Загружаем текстуры модели
-        m_commandList->Reset(m_commandAllocators[0].Get(), nullptr);
-        for (size_t i = 0; i < m_materials.size(); i++) {
-            auto& material = m_materials[i];
-            if (!material.diffuseTexturePath.empty()) {
-                Texture tex = TextureLoader::LoadTexture(m_device.Get(), m_commandList.Get(), material.diffuseTexturePath);
-                material.textureIndex = (int)m_textures.size();
-                m_textures.push_back(tex);
-            }
-            else {
-                material.textureIndex = -1;
+            if (LoadSceneObject(
+                "assets/Cerberus_by_Andrew_Maximov/Cerberus_LP.obj",
+                "assets",
+                world, cerberus, paths))
+            {
+                m_objects.push_back(std::move(cerberus));
             }
         }
 
-        // ================================================
-        // 6. ЗАГРУЗКА IBL ТЕКСТУР
-        // ================================================
-        // Irradiance карта (64x64)
-        Texture irradiance = TextureLoader::LoadIrradianceMap(
-            m_device.Get(),
-            m_commandList.Get(),
-            "assets/ibl/irradiance.dds"
-        );
-        m_textures.push_back(irradiance);
-        m_irradianceTextureIndex = (int)m_textures.size() - 1;
+        {
+            MaterialPaths paths;
+            paths.albedo = "assets/wood_root/Aset_wood_root_M_rkswd_2K_Albedo.jpg";
+            paths.normal = "assets/wood_root/Aset_wood_root_M_rkswd_2K_Normal_LOD0.jpg";
+            paths.roughness = "assets/wood_root/Aset_wood_root_M_rkswd_2K_Roughness.jpg";
+            paths.metallic = ""; 
+            paths.ao = "";  
 
-        // Prefiltered карта с mip-уровнями
-        Texture prefiltered = TextureLoader::LoadPrefilteredMap(
-            m_device.Get(),
-            m_commandList.Get(),
-            "assets/ibl/prefiltered.dds"
-        );
-        m_textures.push_back(prefiltered);
-        m_prefilteredTextureIndex = (int)m_textures.size() - 1;
+            SceneObject woodRoot;
+            XMFLOAT4X4 world;
+            XMStoreFloat4x4(&world, XMMatrixTranslation(1.0f, 0.0f, 0.0f));
 
-        // BRDF LUT (512x512 RG format)
-        Texture brdfLUT = TextureLoader::LoadBRDFLUT(
-            m_device.Get(),
-            m_commandList.Get(),
-            "assets/ibl/brdf_lut.dds"
-        );
-        m_textures.push_back(brdfLUT);
-        m_brdfLUTTextureIndex = (int)m_textures.size() - 1;
-
-        OutputDebugStringA("IBL textures loaded successfully\n");
-        OutputDebugStringA(("  Irradiance: index " + std::to_string(m_irradianceTextureIndex) + "\n").c_str());
-        OutputDebugStringA(("  Prefiltered: index " + std::to_string(m_prefilteredTextureIndex) + "\n").c_str());
-        OutputDebugStringA(("  BRDF LUT: index " + std::to_string(m_brdfLUTTextureIndex) + "\n").c_str());
-
-        // Добавляем дефолтную текстуру если нет ни одной
-        if (m_textures.empty() || m_textures.size() == 3) { // только IBL
-            Texture defaultTex = TextureLoader::CreateDefaultTexture(m_device.Get(), m_commandList.Get());
-            // Вставляем дефолтную текстуру в начало
-            m_textures.insert(m_textures.begin(), defaultTex);
-            for (auto& mat : m_materials) {
-                if (mat.textureIndex == -1) {
-                    mat.textureIndex = 0;
-                }
-                else {
-                    // Сдвигаем индексы на 1
-                    mat.textureIndex += 1;
-                }
+            if (LoadSceneObject(
+                "assets/wood_root/Aset_wood_root_M_rkswd_LOD0.obj",
+                "assets",
+                world, woodRoot, paths))
+            {
+                m_objects.push_back(std::move(woodRoot));
             }
-            // Сдвигаем индексы IBL текстур
-            m_irradianceTextureIndex += 1;
-            m_prefilteredTextureIndex += 1;
-            m_brdfLUTTextureIndex += 1;
         }
+
+        if (m_objects.empty()) {
+            OutputDebugStringA("[Scene] No models loaded\n");
+            return false;
+        }
+
+        m_renderingSystem->CreateIBLResources(m_device.Get(), m_commandList.Get());
 
         ThrowIfFailed(m_commandList->Close());
         ID3D12CommandList* lists[] = { m_commandList.Get() };
         m_commandQueue->ExecuteCommandLists(1, lists);
         WaitForGpu();
 
-        // ================================================
-        // 7. СОЗДАНИЕ SRV HEAP И ДЕСКРИПТОРОВ
-        // ================================================
-        CreateSRVHeap();
-        m_srvDescriptorSize = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-        CreateBuffersFromData();
+        for (auto& obj : m_objects) {
+            obj.vbUpload.Reset();
+            obj.ibUpload.Reset();
+        }
+
         CreateConstantBuffers();
 
-        m_viewport = { 0.0f, 0.0f, (float)m_windowWidth, (float)m_windowHeight, 0.0f, 1.0f };
-        m_scissorRect = { 0, 0, (LONG)m_windowWidth, (LONG)m_windowHeight };
+        m_viewport = { 0.0f, 0.0f, (float)kWidth, (float)kHeight, 0.0f, 1.0f };
+        m_scissorRect = { 0, 0, (LONG)kWidth, (LONG)kHeight };
 
-        m_currentPostProcessEffect = PostProcessSystem::EffectType::Sepia;
-
-        OutputDebugStringA("\n=== Deferred Rendering Init Complete ===\n");
-        OutputDebugStringA("Press 1-4 to change post-process effect:\n");
-        OutputDebugStringA("  1: ReadGBuffer (Debug)\n");
-        OutputDebugStringA("  2: Sepia\n");
-        OutputDebugStringA("  3: Edge Detection\n");
-        OutputDebugStringA("  4: Off\n");
-        OutputDebugStringA("  O/P: Increase/Decrease light intensity\n");
-        OutputDebugStringA("  0: Reset light intensity\n");
+        OutputDebugStringA("\n=== Scene Init Complete ===\n");
         return true;
     }
     catch (std::exception& e) {
@@ -587,62 +306,43 @@ bool D3D12App::Initialize(HWND hwnd) {
     }
 }
 
-void D3D12App::DebugPrintMaterialMapping() {
-    char buffer[512];
-    OutputDebugStringA("\n=== Material-Texture Mapping ===\n");
-    for (size_t i = 0; i < m_materials.size(); i++) {
-        sprintf_s(buffer, "Material[%zu]: '%s' -> Texture[%d] (metallic=%.2f, roughness=%.2f)\n",
-            i, m_materials[i].name.c_str(), m_materials[i].textureIndex,
-            m_materials[i].metallic, m_materials[i].roughness);
-        OutputDebugStringA(buffer);
-    }
-    OutputDebugStringA("\n=== IBL Texture Indices ===\n");
-    sprintf_s(buffer, "Irradiance: %d\n", m_irradianceTextureIndex);
-    OutputDebugStringA(buffer);
-    sprintf_s(buffer, "Prefiltered: %d\n", m_prefilteredTextureIndex);
-    OutputDebugStringA(buffer);
-    sprintf_s(buffer, "BRDF LUT: %d\n", m_brdfLUTTextureIndex);
-    OutputDebugStringA(buffer);
-    OutputDebugStringA("\n=== Render Groups ===\n");
-    for (size_t i = 0; i < m_materialStartIndex.size(); i++) {
-        sprintf_s(buffer, "Group[%zu]: Start=%u, Count=%u\n",
-            i, m_materialStartIndex[i], m_materialIndexCount[i]);
-        OutputDebugStringA(buffer);
-    }
-    OutputDebugStringA("==========================\n");
-}
 
-// ==============================================
-// Рендеринг
-// ==============================================
-void D3D12App::UpdateConstantBuffer(uint32_t bufferIndex) {
+
+void D3D12App::UpdateConstantBuffer(uint32_t frameIndex) {
     m_textureAnimTime += 0.016f;
     m_camera.Update((float)kWidth / kHeight);
 
-    XMMATRIX world = XMMatrixIdentity();
     XMMATRIX view = m_camera.GetViewMatrix();
     XMMATRIX proj = m_camera.GetProjectionMatrix();
-    XMMATRIX wvp = world * view * proj;
     XMFLOAT3 cameraPos = m_camera.GetPosition();
 
-    SceneConstantBuffer cb = {};
-    XMStoreFloat4x4(&cb.worldViewProj, XMMatrixTranspose(wvp));
-    XMStoreFloat4x4(&cb.world, XMMatrixTranspose(world));
-    cb.lightPos = XMFLOAT4(10.0f, 15.0f, -10.0f, 1.0f);
-    cb.lightColor = XMFLOAT4(1.0f, 0.95f, 0.8f, 1.0f);
-    cb.cameraPos = XMFLOAT4(cameraPos.x, cameraPos.y, cameraPos.z, 1.0f);
-    cb.materialAmbient = XMFLOAT4(0.3f, 0.25f, 0.2f, 1.0f);
-    cb.materialDiffuse = XMFLOAT4(0.9f, 0.8f, 0.7f, 1.0f);
-    cb.materialSpecular = XMFLOAT4(0.2f, 0.2f, 0.2f, 1.0f);
-    cb.materialShininess = 16.0f;
-    cb.textureScale = XMFLOAT2(1.0f, 1.0f);
-    cb.textureOffset = XMFLOAT2(0.0f, 0.0f);
+    for (UINT o = 0; o < (UINT)m_objects.size() && o < kMaxObjects; ++o) {
+        XMMATRIX world = XMLoadFloat4x4(&m_objects[o].world);
+        XMMATRIX wvp = world * view * proj;
 
-    memcpy(m_cbvDataBegin[bufferIndex], &cb, sizeof(SceneConstantBuffer));
+        SceneConstantBuffer cb = {};
+        XMStoreFloat4x4(&cb.worldViewProj, XMMatrixTranspose(wvp));
+        XMStoreFloat4x4(&cb.world, XMMatrixTranspose(world));
+
+        cb.lightPos = XMFLOAT4(10.0f, 15.0f, -10.0f, 1.0f);
+        cb.lightColor = XMFLOAT4(1.0f, 0.95f, 0.8f, 1.0f);
+        cb.cameraPos = XMFLOAT4(cameraPos.x, cameraPos.y, cameraPos.z, 1.0f);
+
+        cb.materialAmbient = XMFLOAT4(0.3f, 0.25f, 0.2f, 1.0f);
+        cb.materialDiffuse = XMFLOAT4(0.9f, 0.8f, 0.7f, 1.0f);
+        cb.materialSpecular = XMFLOAT4(0.2f, 0.2f, 0.2f, 1.0f);
+        cb.materialShininess = 16.0f;
+
+        cb.textureScale = XMFLOAT2(1.0f, 1.0f);
+        cb.textureOffset = XMFLOAT2(0.0f, 0.0f);
+
+        memcpy(m_cbvDataBegin[frameIndex][o], &cb, sizeof(SceneConstantBuffer));
+    }
 }
 
 void D3D12App::CreateGeometryPassRootSignature() {
     D3D12_ROOT_PARAMETER rootParams[2];
+
     rootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     rootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     rootParams[0].Descriptor.ShaderRegister = 0;
@@ -650,7 +350,7 @@ void D3D12App::CreateGeometryPassRootSignature() {
 
     D3D12_DESCRIPTOR_RANGE descRange = {};
     descRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    descRange.NumDescriptors = 1;
+    descRange.NumDescriptors = 5;
     descRange.BaseShaderRegister = 0;
     descRange.RegisterSpace = 0;
     descRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
@@ -679,10 +379,12 @@ void D3D12App::CreateGeometryPassRootSignature() {
     ComPtr<ID3DBlob> signature;
     ComPtr<ID3DBlob> error;
     HRESULT hr = D3D12SerializeRootSignature(&rootSigDesc, D3D_ROOT_SIGNATURE_VERSION_1, &signature, &error);
+
     if (FAILED(hr)) {
         if (error) OutputDebugStringA((char*)error->GetBufferPointer());
         ThrowIfFailed(hr, "Serialize geometry root signature");
     }
+
     hr = m_device->CreateRootSignature(0, signature->GetBufferPointer(), signature->GetBufferSize(),
         IID_PPV_ARGS(&m_geometryRootSignature));
     ThrowIfFailed(hr, "Create geometry root signature");
@@ -690,16 +392,20 @@ void D3D12App::CreateGeometryPassRootSignature() {
 
 void D3D12App::CreateGeometryPassPipelineState() {
     ComPtr<ID3DBlob> vs, ps, error;
+
     UINT compileFlags = 0;
 #ifdef _DEBUG
     compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
 #endif
+
     HRESULT hr = D3DCompile(Shaders::GeometryVS, strlen(Shaders::GeometryVS),
         "VS", nullptr, nullptr, "main", "vs_5_0", compileFlags, 0, &vs, &error);
+
     if (FAILED(hr)) {
         if (error) OutputDebugStringA((char*)error->GetBufferPointer());
         ThrowIfFailed(hr, "Compile geometry VS");
     }
+
     hr = D3DCompile(Shaders::GeometryPS, strlen(Shaders::GeometryPS),
         "PS", nullptr, nullptr, "main", "ps_5_0", compileFlags, 0, &ps, &error);
     if (FAILED(hr)) {
@@ -718,161 +424,53 @@ void D3D12App::CreateGeometryPassPipelineState() {
     psoDesc.pRootSignature = m_geometryRootSignature.Get();
     psoDesc.VS = { vs->GetBufferPointer(), vs->GetBufferSize() };
     psoDesc.PS = { ps->GetBufferPointer(), ps->GetBufferSize() };
+
     psoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
     psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
     psoDesc.RasterizerState.FrontCounterClockwise = FALSE;
     psoDesc.RasterizerState.DepthClipEnable = TRUE;
+
     psoDesc.DepthStencilState.DepthEnable = TRUE;
     psoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
     psoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
+
     psoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
     psoDesc.BlendState.RenderTarget[1].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
     psoDesc.BlendState.RenderTarget[2].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
     psoDesc.BlendState.RenderTarget[3].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
     psoDesc.SampleMask = UINT_MAX;
     psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    psoDesc.NumRenderTargets = 4;  // 4 RTV для GBuffer
+    psoDesc.NumRenderTargets = 4; // Albedo, WorldPos, Normal, PBR
+
     psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
-    psoDesc.RTVFormats[1] = DXGI_FORMAT_R32G32B32A32_FLOAT;
-    psoDesc.RTVFormats[2] = DXGI_FORMAT_R32G32B32A32_FLOAT;
-    psoDesc.RTVFormats[3] = DXGI_FORMAT_R8G8B8A8_UNORM;  // PBR
+    psoDesc.RTVFormats[1] = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    psoDesc.RTVFormats[2] = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    psoDesc.RTVFormats[3] = DXGI_FORMAT_R8G8B8A8_UNORM;
     psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
     psoDesc.SampleDesc.Count = 1;
+
     hr = m_device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_geometryPSO));
     ThrowIfFailed(hr, "Create geometry PSO");
 }
 
-// D3D12App.cpp - RenderShadowMapPass
-void D3D12App::RenderShadowMapPass(ID3D12GraphicsCommandList* cmdList) {
-    if (!m_shadowMapSystem || !m_shadowPSO || !m_shadowRootSig) {
-        OutputDebugStringA("WARNING: ShadowMapSystem, PSO or RootSig is null!\n");
-        return;
-    }
-
-    // Проверка геометрии
-    UINT totalIndices = 0;
-    for (UINT j = 0; j < (UINT)m_materials.size(); j++) {
-        if (m_materialIndexCount[j] > 0) {
-            totalIndices += m_materialIndexCount[j];
-        }
-    }
-
-    if (totalIndices == 0) {
-        OutputDebugStringA("[ShadowPass] ERROR: No indices to render!\n");
-        return;
-    }
-
-    if (m_vertexBufferView.BufferLocation == 0 || m_indexBufferView.BufferLocation == 0) {
-        OutputDebugStringA("[ShadowPass] ERROR: Vertex or Index buffer is null!\n");
-        return;
-    }
-
-    // Свет сверху
-    XMMATRIX lightView = XMMatrixLookAtLH(
-        XMVectorSet(0.0f, 50.0f, 0.0f, 1.0f),
-        XMVectorSet(0.0f, 0.0f, 0.0f, 1.0f),
-        XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f)
-    );
-
-    // Ортографическая проекция
-    float orthoSize = 60.0f;
-    XMMATRIX lightProj = XMMatrixOrthographicOffCenterLH(
-        -orthoSize, orthoSize,
-        -orthoSize, orthoSize,
-        1.0f, 200.0f
-    );
-
-    XMFLOAT3 camPos = m_camera.GetPosition();
-    m_shadowMapSystem->UpdateCascades(lightView, lightProj, camPos, 0.1f, 100.0f);
-
-    ID3D12Resource* shadowResource = m_shadowMapSystem->GetDepthResource();
-    if (!shadowResource) {
-        OutputDebugStringA("[ShadowPass] ERROR: Shadow resource is null!\n");
-        return;
-    }
-
-    // Переход из PIXEL_SHADER_RESOURCE в DEPTH_WRITE
-    D3D12_RESOURCE_BARRIER barrier = {};
-    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    barrier.Transition.pResource = shadowResource;
-    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_DEPTH_WRITE;
-    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    cmdList->ResourceBarrier(1, &barrier);
-
-    cmdList->SetPipelineState(m_shadowPSO);
-    cmdList->SetGraphicsRootSignature(m_shadowRootSig.Get());
-
-    D3D12_VIEWPORT shadowViewport = {
-        0.0f, 0.0f,
-        (float)ShadowMapSystem::SHADOW_MAP_SIZE,
-        (float)ShadowMapSystem::SHADOW_MAP_SIZE,
-        0.0f, 1.0f
-    };
-    D3D12_RECT shadowScissor = {
-        0, 0,
-        (LONG)ShadowMapSystem::SHADOW_MAP_SIZE,
-        (LONG)ShadowMapSystem::SHADOW_MAP_SIZE
-    };
-    cmdList->RSSetViewports(1, &shadowViewport);
-    cmdList->RSSetScissorRects(1, &shadowScissor);
-
-    cmdList->IASetVertexBuffers(0, 1, &m_vertexBufferView);
-    cmdList->IASetIndexBuffer(&m_indexBufferView);
-    cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-
-    cmdList->SetGraphicsRootConstantBufferView(0, m_shadowMapSystem->GetConstantBuffer()->GetGPUVirtualAddress());
-
-    // Рендерим все каскады
-    for (int cascade = 0; cascade < ShadowMapSystem::CASCADE_COUNT; ++cascade) {
-        D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = m_shadowMapSystem->GetDSVForCascade(cascade);
-        if (dsvHandle.ptr == 0) {
-            OutputDebugStringA("[ShadowPass] ERROR: Invalid DSV handle!\n");
-            continue;
-        }
-
-        cmdList->ClearDepthStencilView(dsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
-        cmdList->OMSetRenderTargets(0, nullptr, FALSE, &dsvHandle);
-
-        for (UINT j = 0; j < (UINT)m_materials.size(); j++) {
-            if (m_materialIndexCount[j] > 0) {
-                cmdList->DrawIndexedInstanced(m_materialIndexCount[j], 1,
-                    m_materialStartIndex[j], 0, 0);
-            }
-        }
-    }
-
-    // Возвращаем в состояние PIXEL_SHADER_RESOURCE
-    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_DEPTH_WRITE;
-    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-    cmdList->ResourceBarrier(1, &barrier);
-}
-
 void D3D12App::RenderFrame() {
     try {
-        // ================================================
-        // ПОДГОТОВКА КАДРА
-        // ================================================
         m_frameIndex = m_swapChain->GetCurrentBackBufferIndex();
+        XMFLOAT3 cameraPos = m_camera.GetPosition();
         WaitForPreviousFrame();
+
         ThrowIfFailed(m_commandAllocators[m_frameIndex]->Reset());
         ThrowIfFailed(m_commandList->Reset(m_commandAllocators[m_frameIndex].Get(), nullptr));
 
         UpdateConstantBuffer(m_frameIndex);
 
-        // ================================================
-        // ПОЛУЧАЕМ РЕАЛЬНЫЙ РАЗМЕР BACKBUFFER
-        // ================================================
-        D3D12_RESOURCE_DESC backbufferDesc = m_renderTargets[m_frameIndex]->GetDesc();
-        UINT backbufferWidth = (UINT)backbufferDesc.Width;
-        UINT backbufferHeight = (UINT)backbufferDesc.Height;
+        m_viewport = { 0.0f, 0.0f, (float)kWidth, (float)kHeight, 0.0f, 1.0f };
+        m_scissorRect = { 0, 0, (LONG)kWidth, (LONG)kHeight };
 
-        m_viewport = { 0.0f, 0.0f, (float)m_windowWidth, (float)m_windowHeight, 0.0f, 1.0f };
-        m_scissorRect = { 0, 0, (LONG)m_windowWidth, (LONG)m_windowHeight };
+        m_commandList->RSSetViewports(1, &m_viewport);
+        m_commandList->RSSetScissorRects(1, &m_scissorRect);
 
-        // ================================================
-        // ПЕРЕХОД BACKBUFFER В RENDER_TARGET
-        // ================================================
         D3D12_RESOURCE_BARRIER barrier = {};
         barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
@@ -886,34 +484,54 @@ void D3D12App::RenderFrame() {
         rtvHandle.ptr += m_frameIndex * m_rtvDescriptorSize;
         D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = m_dsvHeap->GetCPUDescriptorHandleForHeapStart();
 
-        // ================================================
-        // 1. SHADOW PASS
-        // ================================================
-        RenderShadowMapPass(m_commandList.Get());
-
-        // ================================================
-        // 2. GEOMETRY + LIGHTING PASS
-        // ================================================
-        m_commandList->RSSetViewports(1, &m_viewport);
-        m_commandList->RSSetScissorRects(1, &m_scissorRect);
-
         ID3D12DescriptorHeap* ppHeaps[] = { m_srvHeap.Get() };
         m_commandList->SetDescriptorHeaps(_countof(ppHeaps), ppHeaps);
 
-        RenderingSystem::RenderData renderData;
-        renderData.vertexBuffer = m_vertexBuffer.Get();
-        renderData.indexBuffer = m_indexBuffer.Get();
-        renderData.indexCount = m_indexCount;
-        renderData.cbvAddress = m_constantBuffer[m_frameIndex]->GetGPUVirtualAddress();
-        renderData.modelSrvHeap = m_srvHeap.Get();
-        renderData.srvDescriptorSize = m_srvDescriptorSize;
-        renderData.materialStartIndex = m_materialStartIndex.data();
-        renderData.materialIndexCount = m_materialIndexCount.data();
-        renderData.numMaterials = (UINT)m_materials.size();
-        renderData.materials = m_materials.data();
+        XMMATRIX view = m_camera.GetViewMatrix();
+        XMMATRIX proj = m_camera.GetProjectionMatrix();
+        XMMATRIX viewProj = view * proj;
+        XMFLOAT4X4 viewProjF;
+        XMStoreFloat4x4(&viewProjF, viewProj);
 
+        std::vector<RenderingSystem::RenderData> renderData;
+        renderData.reserve(m_objects.size());
+
+        for (UINT o = 0; o < (UINT)m_objects.size() && o < kMaxObjects; ++o) {
+            auto& obj = m_objects[o];
+
+            RenderingSystem::RenderData rd = {};
+            rd.vertexBuffer = obj.vertexBuffer.Get();
+            rd.indexBuffer = obj.indexBuffer.Get();
+            rd.indexCount = obj.indexCount;
+            rd.cbvAddress = m_constantBuffer[m_frameIndex][o]->GetGPUVirtualAddress();
+            rd.modelSrvHeap = m_srvHeap.Get();
+            rd.srvDescriptorSize = m_srvDescriptorSize;
+            rd.materialStartIndex = obj.materialStartIndex.data();
+            rd.materialIndexCount = obj.materialIndexCount.data();
+            rd.numMaterials = (UINT)obj.materials.size();
+            rd.materials = obj.materials.data();
+            rd.viewProj = viewProjF;
+            rd.cameraPos = cameraPos;
+            renderData.push_back(rd);
+        }
+
+        static LARGE_INTEGER freq = {};
+        static LARGE_INTEGER last = {};
+        if (freq.QuadPart == 0) {
+            QueryPerformanceFrequency(&freq);
+            QueryPerformanceCounter(&last);
+        }
+        LARGE_INTEGER now;
+        QueryPerformanceCounter(&now);
+        float deltaTime = float(now.QuadPart - last.QuadPart) / float(freq.QuadPart);
+        last = now;
+        if (deltaTime > 0.1f) deltaTime = 0.1f;
+
+        m_shootCooldown = std::max(0.0f, m_shootCooldown - deltaTime);
+
+        m_renderingSystem->Update(deltaTime);
         m_renderingSystem->SetGlobalIntensity(m_lightIntensity);
-        m_renderingSystem->SetRenderTargetSize(backbufferWidth, backbufferHeight);
+
 
         m_renderingSystem->Render(
             m_commandList.Get(),
@@ -922,47 +540,29 @@ void D3D12App::RenderFrame() {
             rtvHandle,
             m_geometryRootSignature.Get(),
             m_geometryPSO.Get(),
-            &renderData
+            renderData.data(),
+            (UINT)renderData.size()
         );
 
-        // ================================================
-        // 3. POST-PROCESSING PASS
-        // ================================================
-        m_commandList->RSSetViewports(1, &m_viewport);
-        m_commandList->RSSetScissorRects(1, &m_scissorRect);
-
-        m_renderingSystem->RenderPostProcess(
-            m_commandList.Get(),
-            rtvHandle,
-            backbufferWidth,
-            backbufferHeight,
-            m_currentPostProcessEffect
-        );
-
-        // ================================================
-        // 4. ПЕРЕХОД BACKBUFFER В PRESENT
-        // ================================================
         barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
         barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
         m_commandList->ResourceBarrier(1, &barrier);
 
-        // ================================================
-        // 5. ВЫПОЛНЕНИЕ И ПРЕЗЕНТАЦИЯ
-        // ================================================
         ThrowIfFailed(m_commandList->Close());
+
         ID3D12CommandList* commandLists[] = { m_commandList.Get() };
         m_commandQueue->ExecuteCommandLists(1, commandLists);
+
         m_swapChain->Present(1, 0);
         SignalFrame();
+
     }
     catch (std::exception& e) {
         OutputDebugStringA(e.what());
     }
 }
 
-// ==============================================
-// Ожидание и синхронизация
-// ==============================================
+
 void D3D12App::WaitForPreviousFrame() {
     if (m_fence->GetCompletedValue() < m_fenceValue) {
         ThrowIfFailed(m_fence->SetEventOnCompletion(m_fenceValue, m_fenceEvent), "SetEventOnCompletion");
@@ -982,9 +582,7 @@ void D3D12App::WaitForGpu() {
     WaitForSingleObject(m_fenceEvent, INFINITE);
 }
 
-// ==============================================
-// Управление камерой и ввод
-// ==============================================
+
 void D3D12App::OnMouseWheel(int delta) {
     float zoomAmount = (delta > 0) ? 0.5f : -0.5f;
     m_camera.Zoom(zoomAmount);
@@ -1032,7 +630,8 @@ void D3D12App::OnKeyDown(WPARAM wParam) {
     case VK_RIGHT:
         m_camera.Rotate(10, 0);
         break;
-    case 'O':
+
+    case 'O':  // Увеличить интенсивность
         m_lightIntensity += m_lightIntensityStep;
         if (m_lightIntensity > 5.0f) m_lightIntensity = 5.0f;
         {
@@ -1041,7 +640,8 @@ void D3D12App::OnKeyDown(WPARAM wParam) {
             OutputDebugStringA(buf);
         }
         break;
-    case 'P':
+
+    case 'P':  // Уменьшить интенсивность
         m_lightIntensity -= m_lightIntensityStep;
         if (m_lightIntensity < 0.0f) m_lightIntensity = 0.0f;
         {
@@ -1050,34 +650,282 @@ void D3D12App::OnKeyDown(WPARAM wParam) {
             OutputDebugStringA(buf);
         }
         break;
-    case '0':
+
+    case '0':  // Сброс до 1.0
         m_lightIntensity = 1.0f;
         OutputDebugStringA("Light Intensity Reset to 1.0\n");
         break;
+    case VK_SPACE: {
+        if (m_shootCooldown > 0.0f) break;
 
-    case '1':  // ReadGBuffer (debug)
-        m_currentPostProcessEffect = PostProcessSystem::EffectType::ReadGBuffer;
-        OutputDebugStringA("Post-Process: ReadGBuffer (Debug)\n");
-        break;
+        XMFLOAT3 camPos = m_camera.GetPosition();
 
-    case '2':  // Sepia
-        m_currentPostProcessEffect = PostProcessSystem::EffectType::Sepia;
-        OutputDebugStringA("Post-Process: Sepia\n");
-        break;
+        const float aimHeight = 2.0f;    
+        XMFLOAT3 aimPoint = { 0.0f, aimHeight, 0.0f };
 
-    case '3':  // Edge Detection
-        m_currentPostProcessEffect = PostProcessSystem::EffectType::EdgeDetection;
-        OutputDebugStringA("Post-Process: Edge Detection\n");
-        break;
+        XMFLOAT3 toAim = {
+            aimPoint.x - camPos.x,
+            aimPoint.y - camPos.y,
+            aimPoint.z - camPos.z
+        };
+        XMVECTOR dirV = XMVector3Normalize(XMLoadFloat3(&toAim));
+        XMFLOAT3 dir;
+        XMStoreFloat3(&dir, dirV);
 
-    case '4':  // Off (no post-processing)
-        m_currentPostProcessEffect = PostProcessSystem::EffectType::Off;
-        OutputDebugStringA("Post-Process: Off\n");
+        const float spawnForward = 1.0f;    // вперёд от камеры
+        const float spawnUp = 0.3f;   
+
+        XMFLOAT3 spawn = {
+            camPos.x + dir.x * spawnForward,
+            camPos.y + dir.y * spawnForward + spawnUp,
+            camPos.z + dir.z * spawnForward
+        };
+
+        if (!m_renderingSystem->SpawnProjectile(
+            spawn, dir,
+            XMFLOAT4(1.0f, 0.6f, 0.2f, 1.0f),
+            20.0f, 0.5f, 25.0f, 10.0f, 3.0f)) {
+            OutputDebugStringA("[Spawn] pool full\n");
+        }
+        m_shootCooldown = 0.15f;
         break;
+    }
     }
 }
 
 void D3D12App::ResetCamera() {
     m_camera.Reset();
     OutputDebugStringA("Camera reset\n");
+}
+
+
+static int RegisterTexture(ID3D12Device* device,
+    ID3D12DescriptorHeap* heap,
+    UINT& used,
+    UINT capacity,
+    UINT descriptorSize,
+    const Texture& tex)
+{
+    if (used >= capacity) return -1;
+
+    D3D12_CPU_DESCRIPTOR_HANDLE handle = heap->GetCPUDescriptorHandleForHeapStart();
+    handle.ptr += (UINT64)used * descriptorSize;
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    srvDesc.Format = tex.format;
+    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srvDesc.Texture2D.MipLevels = 1;
+
+    device->CreateShaderResourceView(tex.resource.Get(), &srvDesc, handle);
+    return (int)used++;
+}
+
+bool D3D12App::LoadSceneObject(const std::string& objPath,
+    const std::string& basePath,
+    const DirectX::XMFLOAT4X4& world,
+    SceneObject& outObject,
+    const MaterialPaths& paths)
+{
+    try {
+        ModelData data = ModelLoader::LoadOBJ(objPath, basePath);
+
+        outObject.vertices = std::move(data.vertices);
+        outObject.indices = std::move(data.indices);
+        outObject.materials = std::move(data.materials);
+        outObject.materialStartIndex = std::move(data.materialStartIndex);
+        outObject.materialIndexCount = std::move(data.materialIndexCount);
+        outObject.indexCount = (UINT)outObject.indices.size();
+        outObject.world = world;
+
+        auto fileExists = [](const std::string& path) -> bool {
+            if (path.empty()) return false;
+            DWORD attrs = GetFileAttributesA(path.c_str());
+            return attrs != INVALID_FILE_ATTRIBUTES;
+            };
+
+
+        auto loadMaterialBlock = [&](const MaterialPaths& paths,
+            int& outAlbedo, int& outRoughness,
+            int& outMetallic, int& outAO, int& outNormal) -> int
+            {
+                if (m_srvHeapUsed + 5 > m_srvHeapCapacity) return -1;
+
+                int base = (int)m_srvHeapUsed;
+
+                // albedo, roughness, metallic, ao, normal
+                const std::string* paths5[5] = {
+                    &paths.albedo, &paths.roughness, &paths.metallic, &paths.ao, &paths.normal
+                };
+
+                int albedoResIdx = -1;  
+
+                if (fileExists(paths.albedo)) {
+                    Texture t = TextureLoader::LoadTexture(m_device.Get(), m_commandList.Get(), paths.albedo);
+                    albedoResIdx = (int)m_textures.size();
+                    m_textures.push_back(std::move(t));
+                }
+
+                if (albedoResIdx < 0) {
+                    OutputDebugStringA("[Mat] albedo missing\n");
+                    return -1;
+                }
+
+                D3D12_CPU_DESCRIPTOR_HANDLE heapStart = m_srvHeap->GetCPUDescriptorHandleForHeapStart();
+
+                for (int i = 0; i < 5; ++i) {
+                    int texIdx = albedoResIdx; 
+
+                    if (i > 0 && fileExists(*paths5[i])) {
+                        Texture t = TextureLoader::LoadTexture(m_device.Get(), m_commandList.Get(), *paths5[i]);
+                        texIdx = (int)m_textures.size();
+                        m_textures.push_back(std::move(t));
+                    }
+
+                    D3D12_CPU_DESCRIPTOR_HANDLE h = heapStart;
+                    h.ptr += (UINT64)(m_srvHeapUsed + i) * m_srvDescriptorSize;
+
+                    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+                    srvDesc.Format = m_textures[texIdx].format;
+                    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+                    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+                    srvDesc.Texture2D.MipLevels = 1;
+
+                    m_device->CreateShaderResourceView(m_textures[texIdx].resource.Get(), &srvDesc, h);
+
+                    char buf[256];
+                    sprintf_s(buf, "  [Mat] slot %d = srv %d (tex %d)\n",
+                        i, m_srvHeapUsed + i, texIdx);
+                    OutputDebugStringA(buf);
+                }
+
+                outAlbedo = base + 0;
+                outRoughness = base + 1;
+                outMetallic = base + 2;
+                outAO = base + 3;
+                outNormal = base + 4;
+
+                m_srvHeapUsed += 5;
+                return base;
+            };
+
+        for (auto& mat : outObject.materials) {
+            mat.albedoTexturePath = paths.albedo;
+            mat.normalTexturePath = paths.normal;
+            mat.roughnessTexturePath = paths.roughness;
+            mat.metallicTexturePath = paths.metallic;
+            mat.aoTexturePath = paths.ao;
+
+            int a, r, m, o, n;
+            loadMaterialBlock(paths, a, r, m, o, n);
+
+            mat.albedoSrv = a;
+            mat.roughnessSrv = r;
+            mat.metallicSrv = m;
+            mat.aoSrv = o;
+            mat.normalSrv = n;
+//
+            mat.textureIndex = a;   
+
+            char buf[256];
+            sprintf_s(buf, "[Material] '%s': base=%d (A=%d R=%d M=%d AO=%d N=%d)\n",
+                mat.name.c_str(), a, a, r, m, o, n);
+            OutputDebugStringA(buf);
+        }
+
+        CreateMeshBuffers(outObject);
+
+        char buf[512];
+        sprintf_s(buf, "[Scene] Loaded '%s': %zu verts, %zu idx, %zu materials\n",
+            objPath.c_str(), outObject.vertices.size(),
+            outObject.indices.size(), outObject.materials.size());
+        OutputDebugStringA(buf);
+        return true;
+    }
+    catch (std::exception& e) {
+        char buf[512];
+        sprintf_s(buf, "[Scene] Failed to load '%s': %s\n", objPath.c_str(), e.what());
+        OutputDebugStringA(buf);
+        return false;
+    }
+}
+
+void D3D12App::CreateMeshBuffers(SceneObject& obj) {
+    if (obj.vertices.empty() || obj.indices.empty()) return;
+
+    D3D12_HEAP_PROPERTIES uploadHeapProps = {};
+    uploadHeapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
+
+    D3D12_HEAP_PROPERTIES defaultHeapProps = {};
+    defaultHeapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+    D3D12_RESOURCE_DESC bufferDesc = {};
+    bufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bufferDesc.Height = 1;
+    bufferDesc.DepthOrArraySize = 1;
+    bufferDesc.MipLevels = 1;
+    bufferDesc.Format = DXGI_FORMAT_UNKNOWN;
+    bufferDesc.SampleDesc.Count = 1;
+    bufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+    const UINT vbSize = (UINT)(sizeof(Vertex) * obj.vertices.size());
+    bufferDesc.Width = vbSize;
+
+    ThrowIfFailed(m_device->CreateCommittedResource(
+        &uploadHeapProps, D3D12_HEAP_FLAG_NONE, &bufferDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+        IID_PPV_ARGS(&obj.vbUpload)), "Create VB upload");
+
+    void* data = nullptr;
+    ThrowIfFailed(obj.vbUpload->Map(0, nullptr, &data), "Map VB upload");
+    memcpy(data, obj.vertices.data(), vbSize);
+    obj.vbUpload->Unmap(0, nullptr);
+
+    ThrowIfFailed(m_device->CreateCommittedResource(
+        &defaultHeapProps, D3D12_HEAP_FLAG_NONE, &bufferDesc,
+        D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+        IID_PPV_ARGS(&obj.vertexBuffer)), "Create VB");
+
+    const UINT ibSize = (UINT)(sizeof(uint32_t) * obj.indices.size());
+    bufferDesc.Width = ibSize;
+
+    ThrowIfFailed(m_device->CreateCommittedResource(
+        &uploadHeapProps, D3D12_HEAP_FLAG_NONE, &bufferDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+        IID_PPV_ARGS(&obj.ibUpload)), "Create IB upload");
+
+    ThrowIfFailed(obj.ibUpload->Map(0, nullptr, &data), "Map IB upload");
+    memcpy(data, obj.indices.data(), ibSize);
+    obj.ibUpload->Unmap(0, nullptr);
+
+    ThrowIfFailed(m_device->CreateCommittedResource(
+        &defaultHeapProps, D3D12_HEAP_FLAG_NONE, &bufferDesc,
+        D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+        IID_PPV_ARGS(&obj.indexBuffer)), "Create IB");
+
+    m_commandList->CopyResource(obj.vertexBuffer.Get(), obj.vbUpload.Get());
+    m_commandList->CopyResource(obj.indexBuffer.Get(), obj.ibUpload.Get());
+
+    D3D12_RESOURCE_BARRIER barriers[2] = {};
+    barriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barriers[0].Transition.pResource = obj.vertexBuffer.Get();
+    barriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    barriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
+    barriers[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+
+    barriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barriers[1].Transition.pResource = obj.indexBuffer.Get();
+    barriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_INDEX_BUFFER;
+    barriers[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+
+    m_commandList->ResourceBarrier(2, barriers);
+
+    obj.vbv.BufferLocation = obj.vertexBuffer->GetGPUVirtualAddress();
+    obj.vbv.StrideInBytes = sizeof(Vertex);
+    obj.vbv.SizeInBytes = vbSize;
+
+    obj.ibv.BufferLocation = obj.indexBuffer->GetGPUVirtualAddress();
+    obj.ibv.Format = DXGI_FORMAT_R32_UINT;
+    obj.ibv.SizeInBytes = ibSize;
 }

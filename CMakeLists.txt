@@ -1,8 +1,6 @@
 cmake_minimum_required(VERSION 3.15)
 project(D3D12SponzaRenderer)
 
-include(FetchContent)
-
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -10,14 +8,6 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/libs
 )
-
-
-FetchContent_Declare(
-    directxtex
-    GIT_REPOSITORY https://github.com/microsoft/DirectXTex.git
-    GIT_TAG main
-)
-FetchContent_MakeAvailable(directxtex)
 
 set(SOURCES
     main.cpp
@@ -28,8 +18,7 @@ set(SOURCES
     Rendering/GBuffer.cpp
     Rendering/RenderingSystem.cpp
     Rendering/Light.cpp
-    Shadows/ShadowMap.cpp
-    PostProcess/PostProcessSystem.cpp
+    libs/DDSTextureLoader12.cpp
 )
 
 add_executable(D3D12SponzaRenderer WIN32 ${SOURCES})
@@ -52,7 +41,6 @@ target_link_libraries(D3D12SponzaRenderer
     d3dcompiler
     user32
     shell32
-    DirectXTex
 )
 
 add_custom_command(TARGET D3D12SponzaRenderer POST_BUILD

@@ -12,8 +12,6 @@
 #include "Rendering/RenderingSystem.h"
 #include "Shaders/DeferredGeometryPass.h"
 #include "Shaders/DeferredLightPass.h"
-#include "Shadows/ShadowMap.h"
-#include "PostProcess/PostProcessSystem.h"
 
 struct alignas(256) SceneConstantBuffer {
     DirectX::XMFLOAT4X4 worldViewProj;
@@ -31,6 +29,35 @@ struct alignas(256) SceneConstantBuffer {
 };
 static_assert(sizeof(SceneConstantBuffer) == 256, "CB size mismatch");
 
+struct SceneObject {
+    std::vector<Vertex>   vertices;
+    std::vector<uint32_t> indices;
+    std::vector<Material> materials;
+    std::vector<uint32_t> materialStartIndex;
+    std::vector<uint32_t> materialIndexCount;
+
+    Microsoft::WRL::ComPtr<ID3D12Resource> vertexBuffer;
+    Microsoft::WRL::ComPtr<ID3D12Resource> indexBuffer;
+
+    Microsoft::WRL::ComPtr<ID3D12Resource> vbUpload;
+    Microsoft::WRL::ComPtr<ID3D12Resource> ibUpload;
+
+    D3D12_VERTEX_BUFFER_VIEW vbv{};
+    D3D12_INDEX_BUFFER_VIEW  ibv{};
+    UINT indexCount = 0;
+
+    DirectX::XMFLOAT4X4 world = { /* ... */ };
+};
+
+struct MaterialPaths {
+    std::string albedo;
+    std::string normal;
+    std::string roughness;
+    std::string metallic;
+    std::string ao;
+};
+
+
 class D3D12App {
 public:
     D3D12App();
@@ -40,27 +67,14 @@ public:
     void RenderFrame();
     void Shutdown();
     UINT GetSRVDescriptorSize() const { return m_srvDescriptorSize; }
-    // Input handling
+
     void OnMouseWheel(int delta);
     void OnMouseDown(int x, int y);
     void OnMouseUp();
     void OnMouseMove(int x, int y);
     void OnKeyDown(WPARAM wParam);
     void ResetCamera();
-    std::unique_ptr<ShadowMapSystem> m_shadowMapSystem;
-    ID3D12PipelineState* m_shadowPSO = nullptr; // PSO только для глубины
-    void CreateShadowPassPipelineState();
-    void RenderShadowMapPass(ID3D12GraphicsCommandList* cmdList);
-
-    void SetPostProcessEffect(PostProcessSystem::EffectType effect)
-    {
-        m_currentPostProcessEffect = effect;
-    }
-    PostProcessSystem::EffectType GetPostProcessEffect() const
-    {
-        return m_currentPostProcessEffect;
-    }
-    //void CopyPostProcessToBackBuffer(ID3D12GraphicsCommandList* cmdList, uint32_t frameIndex);
+    float m_shootCooldown = 0.0f;
 
 private:
     static constexpr uint32_t kFrameCount = 2;
@@ -73,14 +87,10 @@ private:
     void CreateSwapChain(HWND hwnd);
     void CreateDescriptorHeaps();
     void CreateDepthStencil();
-    //void CreateRootSignature();
-    //void CreatePipelineState();
     void CreateSRVHeap();
-    void CreateBuffers();
     void CreateConstantBuffers();
     void UpdateConstantBuffer(uint32_t bufferIndex);
-    void CreateBuffersFromData();
-    void DebugPrintMaterialMapping();
+    //void DebugPrintMaterialMapping();
 
     void WaitForGpu();
     void WaitForPreviousFrame();
@@ -88,20 +98,20 @@ private:
 
     void CreateGeometryPassRootSignature();
     void CreateGeometryPassPipelineState();
-    void CreateLightingPassResources();
 
-    // Новая PSO и Root Signature для геометрического прохода
+    bool LoadSceneObject(const std::string& objPath,
+        const std::string& basePath,
+        const DirectX::XMFLOAT4X4& world,
+        SceneObject& outObject,
+        const MaterialPaths& paths);
+
+    void CreateMeshBuffers(SceneObject& obj);
+
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_geometryRootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_geometryPSO;
 
-    // GBuffer дескрипторы
-    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_gbufferRtvHeap;
-    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_gbufferSrvHeap;
-
-    // Система рендеринга
     std::unique_ptr<RenderingSystem> m_renderingSystem;
-    Microsoft::WRL::ComPtr<ID3D12RootSignature> m_shadowRootSig;
-    // D3D12 objects
+
     Microsoft::WRL::ComPtr<ID3D12Device> m_device;
     Microsoft::WRL::ComPtr<ID3D12CommandQueue> m_commandQueue;
     Microsoft::WRL::ComPtr<IDXGISwapChain3> m_swapChain;
@@ -112,63 +122,37 @@ private:
     Microsoft::WRL::ComPtr<ID3D12CommandAllocator> m_commandAllocators[kFrameCount];
     Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> m_commandList;
     Microsoft::WRL::ComPtr<ID3D12Fence> m_fence;
-    HANDLE m_fenceEvent = nullptr;
+    HANDLE   m_fenceEvent = nullptr;
     uint64_t m_fenceValue = 0;
     uint32_t m_frameIndex = 0;
 
-    // Descriptor sizes
-    uint32_t m_rtvDescriptorSize = 0;      // Добавлено
-    uint32_t m_srvDescriptorSize = 0;      // Добавлено
+    uint32_t m_rtvDescriptorSize = 0;
+    uint32_t m_srvDescriptorSize = 0;
 
-    // Pipeline
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_pipelineState;
 
-    // Buffers
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_vertexBuffer;
-    D3D12_VERTEX_BUFFER_VIEW m_vertexBufferView;
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_indexBuffer;
-    D3D12_INDEX_BUFFER_VIEW m_indexBufferView;
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_constantBuffer[kFrameCount];
-    void* m_cbvDataBegin[kFrameCount];
+    static constexpr UINT kMaxObjects = 8;
 
-    // Textures
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_constantBuffer[kFrameCount][kMaxObjects];
+    void* m_cbvDataBegin[kFrameCount][kMaxObjects] = {};
+
     std::vector<Texture> m_textures;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_srvHeap;
+    UINT m_srvHeapCapacity = 0;
+    UINT m_srvHeapUsed = 0;
 
-    // Scene data
-    std::vector<Vertex> m_vertices;
-    std::vector<uint32_t> m_indices;
-    std::vector<Material> m_materials;
-    std::vector<uint32_t> m_materialStartIndex;
-    std::vector<uint32_t> m_materialIndexCount;
-    uint32_t m_indexCount = 0;
+    std::vector<SceneObject> m_objects;
 
-    // Camera
     Camera m_camera;
 
-    // Input state
-    bool m_mousePressed = false;
+    bool  m_mousePressed = false;
     POINT m_lastMousePos = {};
 
-    float m_lightIntensity = 1.0f;  // Текущая интенсивность
-    float m_lightIntensityStep = 0.1f;  // Шаг изменения
-
-    // Animation
+    float m_lightIntensity = 1.0f;
+    float m_lightIntensityStep = 0.1f;
     float m_textureAnimTime = 0.0f;
-    float m_rotationAngle = 0.0f;
-
 
     D3D12_VIEWPORT m_viewport;
-    D3D12_RECT m_scissorRect;
-
-    UINT m_windowWidth = kWidth;
-    UINT m_windowHeight = kHeight;
-
-    PostProcessSystem::EffectType m_currentPostProcessEffect = PostProcessSystem::EffectType::Sepia;
-
-    // Индексы IBL текстур в m_textures
-    int m_irradianceTextureIndex = -1;
-    int m_prefilteredTextureIndex = -1;
-    int m_brdfLUTTextureIndex = -1;
+    D3D12_RECT     m_scissorRect;
 };

@@ -120,9 +120,7 @@ VSOutput VS_PostProcess(uint vertexID : SV_VertexID)
 {
     VSOutput output;
     
-    // ============================================
-    // 4 ВЕРШИНЫ ДЛЯ FULLSCREEN QUAD (TRIANGLE STRIP)
-    // ============================================
+  
     // Vertex 0: (-1,  1) -> uv (0, 0) - left-top
     // Vertex 1: ( 1,  1) -> uv (1, 0) - right-top
     // Vertex 2: (-1, -1) -> uv (0, 1) - left-bottom
@@ -131,7 +129,6 @@ VSOutput VS_PostProcess(uint vertexID : SV_VertexID)
     float x = (vertexID == 1 || vertexID == 3) ? 1.0f : -1.0f;
     float y = (vertexID == 0 || vertexID == 1) ? 1.0f : -1.0f;
     
-    // UV координаты (DX: y перевернут)
     float u = (x + 1.0f) * 0.5f;
     float v = 1.0f - (y + 1.0f) * 0.5f;
     
@@ -247,7 +244,6 @@ float4 PS_EdgeDetection(PSInput input) : SV_TARGET
 }
 float4 PS_Test(PSInput input) : SV_TARGET
 {
-    // Красный градиент - если вы видите его на всем экране, то проблема в чтении GBuffer
     return float4(input.uv.x, input.uv.y, 0.0f, 1.0f);
 }
 )";
@@ -257,7 +253,7 @@ float4 PS_Test(PSInput input) : SV_TARGET
     compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
 #endif
 
-    // Компилируем Vertex Shader
+    // Vertex Shader
     ComPtr<ID3DBlob> vsBlob;
     ComPtr<ID3DBlob> vsError;
 
@@ -285,7 +281,7 @@ float4 PS_Test(PSInput input) : SV_TARGET
         "PS_ReadGBuffer",
         "PS_Sepia",
         "PS_EdgeDetection",
-        "PS_Test"  // Добавьте этот
+        "PS_Test"  
     };
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
@@ -407,9 +403,6 @@ void PostProcessSystem::Render(
         return;
     }
 
-    // ============================================
-    // УСТАНАВЛИВАЕМ VIEWPORT НА ВЕСЬ ЭКРАН
-    // ============================================
     D3D12_VIEWPORT viewport = {};
     viewport.TopLeftX = 0.0f;
     viewport.TopLeftY = 0.0f;
@@ -426,14 +419,11 @@ void PostProcessSystem::Render(
     scissorRect.bottom = static_cast<LONG>(targetHeight);
     cmdList->RSSetScissorRects(1, &scissorRect);
 
-    // Устанавливаем render target (прямо в backbuffer)
     cmdList->OMSetRenderTargets(1, &targetRTV, FALSE, nullptr);
 
-    // Устанавливаем descriptor heap
     ID3D12DescriptorHeap* ppHeaps[] = { m_gbufferSrvHeap.Get() };
     cmdList->SetDescriptorHeaps(1, ppHeaps);
 
-    // Устанавливаем root signature и PSO
     cmdList->SetGraphicsRootSignature(m_rootSignature.Get());
 
     int effectIndex = static_cast<int>(effectType);
@@ -442,11 +432,9 @@ void PostProcessSystem::Render(
 
     cmdList->SetPipelineState(m_pipelineStates[effectIndex].Get());
 
-    // Биндим GBuffer текстуры
     D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = m_gbufferSrvHeap->GetGPUDescriptorHandleForHeapStart();
     cmdList->SetGraphicsRootDescriptorTable(0, gpuHandle);
 
-    // Рисуем fullscreen quad
     cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
     cmdList->DrawInstanced(4, 1, 0, 0);

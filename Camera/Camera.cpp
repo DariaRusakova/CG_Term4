@@ -45,3 +45,13 @@ void Camera::Recalculate() {
     XMVECTOR up = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
     m_view = XMMatrixLookAtLH(pos, target, up);
 }
+
+
+XMFLOAT3 Camera::GetForward() const {
+    XMFLOAT3 pos = GetPosition();
+    XMFLOAT3 tgt = GetTarget();
+    XMVECTOR dir = XMLoadFloat3(&tgt) - XMLoadFloat3(&pos);
+    XMFLOAT3 out;
+    XMStoreFloat3(&out, XMVector3Normalize(dir));
+    return out;
+}

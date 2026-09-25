@@ -16,6 +16,9 @@ public:
     DirectX::XMFLOAT3 GetPosition() const;
     float GetDistance() const { return m_distance; }
 
+    DirectX::XMFLOAT3 GetTarget() const { return DirectX::XMFLOAT3(0.0f, 1.0f, 0.0f); }
+    DirectX::XMFLOAT3 GetForward() const;
+
     void SetDistance(float dist) { m_distance = std::clamp(dist, m_minDistance, m_maxDistance); }
     void SetYaw(float yaw) { m_yaw = yaw; }
     void SetPitch(float pitch) { m_pitch = std::clamp(pitch, -DirectX::XM_PIDIV2 + 0.1f, DirectX::XM_PIDIV2 - 0.1f); }
@@ -33,4 +36,5 @@ private:
 
     DirectX::XMMATRIX m_view;
     DirectX::XMMATRIX m_proj;
+
 };

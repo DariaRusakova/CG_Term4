@@ -10,133 +10,6 @@
 
 using namespace DirectX;
 
-// Функция генерации PBR параметров на основе имени материала (улучшенная эвристика)
-static void GeneratePBRFromMaterialName(Material& material) {
-    std::string name = material.name;
-    std::transform(name.begin(), name.end(), name.begin(), ::tolower);
-
-    // === МЕТАЛЛЫ (высокий metallic, низкий roughness) ===
-    if (name.find("metal") != std::string::npos ||
-        name.find("iron") != std::string::npos ||
-        name.find("steel") != std::string::npos ||
-        name.find("gold") != std::string::npos ||
-        name.find("copper") != std::string::npos ||
-        name.find("bronze") != std::string::npos ||
-        name.find("brass") != std::string::npos ||
-        name.find("flagpole") != std::string::npos ||      // флагшток Sponza
-        name.find("chain") != std::string::npos) {         // цепи Sponza
-        material.metallic = 0.8f;
-        material.roughness = 0.3f;
-        material.ao = 0.9f;
-    }
-
-    // === ДЕРЕВО ===
-    else if (name.find("wood") != std::string::npos ||
-        name.find("bark") != std::string::npos) {
-        material.metallic = 0.0f;
-        material.roughness = 0.8f;
-        material.ao = 0.7f;
-    }
-
-    // === КАМЕНЬ (включая мрамор, гранит, кирпич) ===
-    else if (name.find("stone") != std::string::npos ||
-        name.find("rock") != std::string::npos ||
-        name.find("brick") != std::string::npos ||
-        name.find("marble") != std::string::npos ||
-        name.find("granite") != std::string::npos ||
-        name.find("column") != std::string::npos ||    // колонны Sponza
-        name.find("pillar") != std::string::npos ||
-        name.find("arch") != std::string::npos ||      // арки Sponza
-        name.find("floor") != std::string::npos ||     // полы Sponza
-        name.find("ceiling") != std::string::npos) {   // потолок Sponza
-        material.metallic = 0.0f;
-        material.roughness = 0.6f;  // слегка шероховатый
-        material.ao = 0.9f;
-    }
-
-    // === КЕРАМИКА, ГЛИНА, ФАРФОР ===
-    else if (name.find("vase") != std::string::npos ||      // вазы Sponza
-        name.find("ceramic") != std::string::npos ||
-        name.find("clay") != std::string::npos ||
-        name.find("porcelain") != std::string::npos ||
-        name.find("pottery") != std::string::npos) {
-        material.metallic = 0.0f;
-        material.roughness = 0.25f;  // гладкая поверхность
-        material.ao = 0.9f;
-    }
-
-    // === ТКАНЬ, ТЕКСТИЛЬ ===
-    else if (name.find("fabric") != std::string::npos ||
-        name.find("cloth") != std::string::npos ||
-        name.find("curtain") != std::string::npos ||
-        name.find("carpet") != std::string::npos ||
-        name.find("textile") != std::string::npos ||
-        name.find("banner") != std::string::npos) {
-        material.metallic = 0.0f;
-        material.roughness = 0.9f;   // очень шероховатая
-        material.ao = 0.6f;
-    }
-
-    // === ПЛАСТИК, ПОЛИМЕРЫ ===
-    else if (name.find("plastic") != std::string::npos ||
-        name.find("polymer") != std::string::npos ||
-        name.find("resin") != std::string::npos) {
-        material.metallic = 0.0f;
-        material.roughness = 0.4f;
-        material.ao = 1.0f;
-    }
-
-    // === СТЕКЛО ===
-    else if (name.find("glass") != std::string::npos ||
-        name.find("glazing") != std::string::npos ||
-        name.find("window") != std::string::npos) {
-        material.metallic = 0.0f;
-        material.roughness = 0.05f;  // очень гладкое
-        material.ao = 1.0f;
-    }
-
-    // === РЕЗИНА ===
-    else if (name.find("rubber") != std::string::npos) {
-        material.metallic = 0.0f;
-        material.roughness = 0.9f;
-        material.ao = 0.8f;
-    }
-
-    // === СТАТУИ, ДЕКОРАТИВНЫЕ ЭЛЕМЕНТЫ ===
-    else if (name.find("lion") != std::string::npos ||      // статуи львов Sponza
-        name.find("statue") != std::string::npos ||
-        name.find("sculpture") != std::string::npos ||
-        name.find("ornament") != std::string::npos ||
-        name.find("detail") != std::string::npos ||    // детали Sponza
-        name.find("thorn") != std::string::npos) {     // шипы Sponza
-        material.metallic = 0.1f;   // слегка металлические
-        material.roughness = 0.4f;
-        material.ao = 0.9f;
-    }
-
-    // === ОБОИ, ФОН ===
-    else if (name.find("background") != std::string::npos ||
-        name.find("wallpaper") != std::string::npos) {
-        material.metallic = 0.0f;
-        material.roughness = 0.8f;
-        material.ao = 1.0f;
-    }
-
-    // === КРЫША (часто грубая) ===
-    else if (name.find("roof") != std::string::npos) {
-        material.metallic = 0.0f;
-        material.roughness = 0.8f;
-        material.ao = 0.7f;
-    }
-
-    // === ПО УМОЛЧАНИЮ (если ничего не подошло) ===
-    else {
-        material.metallic = 0.0f;
-        material.roughness = 0.5f;   // средняя шероховатость
-        material.ao = 1.0f;
-    }
-}
-
 ModelData ModelLoader::LoadOBJ(const std::string& filename, const std::string& basePath) {
     tinyobj::attrib_t attrib;
     std::vector<tinyobj::shape_t> shapes;
@@ -154,7 +27,7 @@ ModelData ModelLoader::LoadOBJ(const std::string& filename, const std::string& b
     }
 
     ModelData model;
-    const float scale = 0.01f;
+    const float scale = 1.0f;
 
     // 1. Загружаем материалы
     std::map<int, int> materialIdToIndex;
@@ -162,17 +35,14 @@ ModelData ModelLoader::LoadOBJ(const std::string& filename, const std::string& b
         const auto& mat = materials[i];
         Material material;
         material.name = mat.name;
-        material.ambient = XMFLOAT3(mat.ambient[0], mat.ambient[1], mat.ambient[2]);
-        material.diffuse = XMFLOAT3(mat.diffuse[0], mat.diffuse[1], mat.diffuse[2]);
-        material.specular = XMFLOAT3(mat.specular[0], mat.specular[1], mat.specular[2]);
-        material.shininess = mat.shininess;
+        //material.ambient = XMFLOAT3(mat.ambient[0], mat.ambient[1], mat.ambient[2]);
+        //material.diffuse = XMFLOAT3(mat.diffuse[0], mat.diffuse[1], mat.diffuse[2]);
+        //material.specular = XMFLOAT3(mat.specular[0], mat.specular[1], mat.specular[2]);
+        //material.shininess = mat.shininess;
 
-        if (!mat.diffuse_texname.empty()) {
-            material.diffuseTexturePath = basePath + "/" + mat.diffuse_texname;
-        }
-
-        // Генерируем PBR параметры на основе имени материала
-        GeneratePBRFromMaterialName(material);
+        //if (!mat.diffuse_texname.empty()) {
+        //    material.diffuseTexturePath = basePath + "/" + mat.diffuse_texname;
+        //}
 
         material.textureIndex = -1;
         model.materials.push_back(material);
@@ -183,13 +53,10 @@ ModelData ModelLoader::LoadOBJ(const std::string& filename, const std::string& b
     if (model.materials.empty()) {
         Material defaultMat;
         defaultMat.name = "default";
-        defaultMat.ambient = XMFLOAT3(0.3f, 0.25f, 0.2f);
-        defaultMat.diffuse = XMFLOAT3(0.9f, 0.8f, 0.7f);
-        defaultMat.specular = XMFLOAT3(0.2f, 0.2f, 0.2f);
-        defaultMat.shininess = 16.0f;
-        defaultMat.metallic = 0.0f;
-        defaultMat.roughness = 0.5f;
-        defaultMat.ao = 1.0f;
+        //defaultMat.ambient = XMFLOAT3(0.3f, 0.25f, 0.2f);
+        //defaultMat.diffuse = XMFLOAT3(0.9f, 0.8f, 0.7f);
+        //defaultMat.specular = XMFLOAT3(0.2f, 0.2f, 0.2f);
+        //defaultMat.shininess = 16.0f;
         model.materials.push_back(defaultMat);
         materialIdToIndex[-1] = 0;
     }
@@ -309,11 +176,8 @@ ModelData ModelLoader::LoadOBJ(const std::string& filename, const std::string& b
     OutputDebugStringA(buffer);
 
     for (size_t i = 0; i < model.materialStartIndex.size() && i < model.materials.size(); i++) {
-        sprintf_s(buffer, "Group[%zu]: material='%s', metallic=%.2f, roughness=%.2f, ao=%.2f, startIndex=%u, count=%u\n",
+        sprintf_s(buffer, "Group[%zu]: material='%s', startIndex=%u, count=%u\n",
             i, model.materials[i].name.c_str(),
-            model.materials[i].metallic,
-            model.materials[i].roughness,
-            model.materials[i].ao,
             model.materialStartIndex[i], model.materialIndexCount[i]);
         OutputDebugStringA(buffer);
     }

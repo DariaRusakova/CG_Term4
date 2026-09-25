@@ -6,15 +6,11 @@
 #include <stdexcept>
 #include <windows.h>
 
-// Добавляем DirectXTex
-#include <DirectXTex.h>
-
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 #include "libs/d3dx12.h"
 
 using namespace Microsoft::WRL;
-using namespace DirectX;
 
 #pragma pack(push, 1)
 struct TGAHeader {
@@ -37,130 +33,6 @@ struct TGAHeader {
 static bool FileExists(const std::string& path) {
     std::ifstream file(path, std::ios::binary);
     return file.is_open();
-}
-
-// Загрузка DDS через DirectXTex (работает со всеми сжатыми форматами)
-static Texture LoadDDSTextureInternal(ID3D12Device* device, ID3D12GraphicsCommandList* commandList, const std::string& filename) {
-    Texture texture;
-    texture.filename = filename;
-    texture.mipLevels = 1;
-
-    // Используем DirectXTex для загрузки
-    TexMetadata metadata;
-    ScratchImage image;
-
-    HRESULT hr = LoadFromDDSFile(
-        std::wstring(filename.begin(), filename.end()).c_str(),
-        DDS_FLAGS_NONE,
-        &metadata,
-        image
-    );
-
-    if (FAILED(hr)) {
-        OutputDebugStringA(("Failed to load DDS with DirectXTex: " + filename + "\n").c_str());
-        return TextureLoader::CreateDefaultTexture(device, commandList);
-    }
-
-    texture.width = (int)metadata.width;
-    texture.height = (int)metadata.height;
-    texture.mipLevels = (int)metadata.mipLevels;
-    texture.format = metadata.format;
-
-    // Проверяем, что формат поддерживается
-    if (texture.format == DXGI_FORMAT_UNKNOWN) {
-        OutputDebugStringA(("Unknown DDS format: " + filename + "\n").c_str());
-        return TextureLoader::CreateDefaultTexture(device, commandList);
-    }
-
-    // Создаем текстуру
-    D3D12_RESOURCE_DESC texDesc = {};
-    texDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    texDesc.Width = texture.width;
-    texDesc.Height = texture.height;
-    texDesc.DepthOrArraySize = 1;
-    texDesc.MipLevels = texture.mipLevels;
-    texDesc.Format = texture.format;
-    texDesc.SampleDesc.Count = 1;
-    texDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-    texDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
-
-    D3D12_HEAP_PROPERTIES heapProps = {};
-    heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
-
-    hr = device->CreateCommittedResource(
-        &heapProps, D3D12_HEAP_FLAG_NONE, &texDesc,
-        D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
-        IID_PPV_ARGS(&texture.resource));
-
-    if (FAILED(hr)) {
-        OutputDebugStringA(("Failed to create DDS texture resource: " + filename + "\n").c_str());
-        return TextureLoader::CreateDefaultTexture(device, commandList);
-    }
-
-    // Вычисляем размер загрузочного буфера
-    const UINT64 uploadBufferSize = GetRequiredIntermediateSize(texture.resource.Get(), 0, texture.mipLevels);
-
-    D3D12_HEAP_PROPERTIES uploadHeapProps = {};
-    uploadHeapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
-
-    D3D12_RESOURCE_DESC uploadBufferDesc = {};
-    uploadBufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    uploadBufferDesc.Width = uploadBufferSize;
-    uploadBufferDesc.Height = 1;
-    uploadBufferDesc.DepthOrArraySize = 1;
-    uploadBufferDesc.MipLevels = 1;
-    uploadBufferDesc.Format = DXGI_FORMAT_UNKNOWN;
-    uploadBufferDesc.SampleDesc.Count = 1;
-    uploadBufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-    hr = device->CreateCommittedResource(
-        &uploadHeapProps, D3D12_HEAP_FLAG_NONE, &uploadBufferDesc,
-        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-        IID_PPV_ARGS(&texture.uploadHeap));
-
-    if (FAILED(hr)) {
-        OutputDebugStringA(("Failed to create upload buffer for DDS: " + filename + "\n").c_str());
-        return TextureLoader::CreateDefaultTexture(device, commandList);
-    }
-
-    // Подготавливаем subresource данные
-    const Image* images = image.GetImages();
-    size_t imageCount = image.GetImageCount();
-
-    // Создаем временные копии данных (они должны жить до вызова UpdateSubresources)
-    std::vector<std::vector<uint8_t>> imageData(imageCount);
-    std::vector<D3D12_SUBRESOURCE_DATA> subresources(imageCount);
-
-    for (size_t i = 0; i < imageCount; ++i) {
-        const Image& img = images[i];
-        size_t dataSize = img.slicePitch;
-
-        imageData[i].resize(dataSize);
-        memcpy(imageData[i].data(), img.pixels, dataSize);
-
-        subresources[i].pData = imageData[i].data();
-        subresources[i].RowPitch = img.rowPitch;
-        subresources[i].SlicePitch = img.slicePitch;
-    }
-
-    UpdateSubresources(commandList, texture.resource.Get(), texture.uploadHeap.Get(),
-        0, 0, (UINT)imageCount, subresources.data());
-
-    // Переход в состояние шейдера
-    D3D12_RESOURCE_BARRIER barrier = {};
-    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    barrier.Transition.pResource = texture.resource.Get();
-    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    commandList->ResourceBarrier(1, &barrier);
-
-    char buffer[512];
-    sprintf_s(buffer, "Loaded DDS: %s (%dx%d, %d mips, format: %d)\n",
-        filename.c_str(), texture.width, texture.height, texture.mipLevels, texture.format);
-    OutputDebugStringA(buffer);
-
-    return texture;
 }
 
 // Загрузка TGA текстуры
@@ -192,7 +64,6 @@ static Texture LoadTGATexture(ID3D12Device* device, ID3D12GraphicsCommandList* c
 
     texture.width = header.width;
     texture.height = header.height;
-    texture.mipLevels = 1;
     texture.format = DXGI_FORMAT_R8G8B8A8_UNORM;
 
     int bytesPerPixel = header.bitsPerPixel / 8;
@@ -363,10 +234,6 @@ Texture TextureLoader::LoadTexture(ID3D12Device* device, ID3D12GraphicsCommandLi
         return LoadTGATexture(device, commandList, filename);
     }
 
-    if (ext == "dds") {
-        return LoadDDSTextureInternal(device, commandList, filename);
-    }
-
     // Используем stb_image для PNG, JPG, BMP
     int width, height, channels;
     unsigned char* imageData = stbi_load(filename.c_str(), &width, &height, &channels, 4);
@@ -379,7 +246,6 @@ Texture TextureLoader::LoadTexture(ID3D12Device* device, ID3D12GraphicsCommandLi
     Texture texture;
     texture.width = width;
     texture.height = height;
-    texture.mipLevels = 1;
     texture.format = DXGI_FORMAT_R8G8B8A8_UNORM;
     texture.filename = filename;
 
@@ -459,7 +325,6 @@ Texture TextureLoader::CreateDefaultTexture(ID3D12Device* device, ID3D12Graphics
     Texture texture;
     texture.width = 1;
     texture.height = 1;
-    texture.mipLevels = 1;
     texture.format = DXGI_FORMAT_R8G8B8A8_UNORM;
 
     D3D12_RESOURCE_DESC texDesc = {};
@@ -523,21 +388,4 @@ Texture TextureLoader::CreateDefaultTexture(ID3D12Device* device, ID3D12Graphics
 
     OutputDebugStringA("Created default white texture\n");
     return texture;
-}
-
-// Загрузка IBL текстур
-Texture TextureLoader::LoadDDSTexture(ID3D12Device* device, ID3D12GraphicsCommandList* commandList, const std::string& filename) {
-    return LoadDDSTextureInternal(device, commandList, filename);
-}
-
-Texture TextureLoader::LoadIrradianceMap(ID3D12Device* device, ID3D12GraphicsCommandList* commandList, const std::string& filename) {
-    return LoadDDSTextureInternal(device, commandList, filename);
-}
-
-Texture TextureLoader::LoadPrefilteredMap(ID3D12Device* device, ID3D12GraphicsCommandList* commandList, const std::string& filename) {
-    return LoadDDSTextureInternal(device, commandList, filename);
-}
-
-Texture TextureLoader::LoadBRDFLUT(ID3D12Device* device, ID3D12GraphicsCommandList* commandList, const std::string& filename) {
-    return LoadDDSTextureInternal(device, commandList, filename);
 }
