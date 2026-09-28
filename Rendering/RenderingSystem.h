@@ -13,6 +13,7 @@
 
 class RenderingSystem {
 public:
+    // ================== RenderData ==================
     struct RenderData {
         ID3D12Resource* vertexBuffer;
         ID3D12Resource* indexBuffer;
@@ -28,6 +29,7 @@ public:
         DirectX::XMFLOAT3 cameraPos;
     };
 
+    // ============== Константы визуализации света ==============
     struct alignas(256) LightVisConstants  {
         DirectX::XMFLOAT4X4 viewProj;
         DirectX::XMFLOAT4   lightPos;    // xyz = world pos, w = radius
@@ -52,8 +54,9 @@ public:
     void AddLight(const Light& light);
     void ClearLights();
 
-    static constexpr UINT kMaxProjectiles = 16;   
+    static constexpr UINT kMaxProjectiles = 16;   // = lights[16] в шейдере
 
+    // Spawn снаряда из точки origin в направлении dir
     bool SpawnProjectile(const DirectX::XMFLOAT3& origin,
         const DirectX::XMFLOAT3& dir,
         const DirectX::XMFLOAT4& color = { 1.0f, 0.6f, 0.2f, 1.0f },
@@ -63,9 +66,11 @@ public:
         float range = 10.0f,
         float lifetime = 3.0f);
 
+    // Управление глобальной интенсивностью (только запоминает множитель)
     void SetGlobalIntensity(float intensity) { m_globalIntensity = intensity; }
     bool IsIBLReady() const { return m_iblReady; }
 
+    // Обновление (двигает снаряды, пересобирает m_lights)
     void Update(float deltaTime);
     void CreateIBLResources(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList);
 
@@ -73,16 +78,19 @@ private:
     void CreateLightBuffers(ID3D12Device* device);
     void CreateFullscreenQuad(ID3D12Device* device);
     void CreateLightingPassPipeline(ID3D12Device* device);
-    void CreateLightVisPipeline(ID3D12Device* device);  
+    void CreateLightVisPipeline(ID3D12Device* device);   // <-- объявление
+
     void RenderLightGizmos(ID3D12GraphicsCommandList* cmdList,
         D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle,
         const DirectX::XMFLOAT4X4& viewProj);
 
+    // ============== Ресурсы визуализации света ==============
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_lightVisRootSig;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_lightVisPSO;
     Microsoft::WRL::ComPtr<ID3D12Resource>      m_lightVisCB;
     void* m_lightVisCBData = nullptr;
 
+    // ============== Ресурсы освещения ==============
     void* m_lightCBData = nullptr;
 
     float m_globalIntensity = 1.0f;
@@ -123,6 +131,7 @@ private:
     Projectile m_projectiles[kMaxProjectiles] = {};
     std::vector<Light> m_staticLights;
 
+    // ============== IBL-ресурсы ==============
     Microsoft::WRL::ComPtr<ID3D12Resource> m_irradianceMap;
     Microsoft::WRL::ComPtr<ID3D12Resource> m_prefilteredMap;
     Microsoft::WRL::ComPtr<ID3D12Resource> m_brdfLUT;

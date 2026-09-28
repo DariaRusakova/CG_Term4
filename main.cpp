@@ -47,16 +47,16 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     wc.lpszClassName = "D3D12App";
     RegisterClassA(&wc);
 
-    D3D12App app;
+    auto app = std::make_unique<D3D12App>();
 
     HWND hwnd = CreateWindowExA(0, "D3D12App", "D3D12 Sponza Renderer",
         WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 1024, 768,
-        nullptr, nullptr, hInstance, &app);
+        nullptr, nullptr, hInstance, app.get());
 
     if (!hwnd) return 1;
     ShowWindow(hwnd, nCmdShow);
 
-    if (!app.Initialize(hwnd)) return 1;
+    if (!app->Initialize(hwnd)) return 1;
 
     MSG msg = {};
     while (true) {
@@ -65,6 +65,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
             TranslateMessage(&msg);
             DispatchMessage(&msg);
         }
-        app.RenderFrame();
+        app->RenderFrame();
     }
 }

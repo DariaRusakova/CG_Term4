@@ -16,19 +16,21 @@
 struct alignas(256) SceneConstantBuffer {
     DirectX::XMFLOAT4X4 worldViewProj;
     DirectX::XMFLOAT4X4 world;
+
     DirectX::XMFLOAT4 lightPos;
     DirectX::XMFLOAT4 lightColor;
     DirectX::XMFLOAT4 cameraPos;
-    DirectX::XMFLOAT4 materialAmbient;
-    DirectX::XMFLOAT4 materialDiffuse;
-    DirectX::XMFLOAT4 materialSpecular;
-    float materialShininess;
+
     DirectX::XMFLOAT2 textureScale;
     DirectX::XMFLOAT2 textureOffset;
-    float padding[2];
+
+    DirectX::XMFLOAT4 materialFactor;
+
+    float padding[8];
 };
 static_assert(sizeof(SceneConstantBuffer) == 256, "CB size mismatch");
 
+// Один объект сцены: свои буферы, свои материалы, своя world-матрица
 struct SceneObject {
     std::vector<Vertex>   vertices;
     std::vector<uint32_t> indices;
@@ -47,6 +49,7 @@ struct SceneObject {
     UINT indexCount = 0;
 
     DirectX::XMFLOAT4X4 world = { /* ... */ };
+    bool hasTextures = false;
 };
 
 struct MaterialPaths {
@@ -90,7 +93,7 @@ private:
     void CreateSRVHeap();
     void CreateConstantBuffers();
     void UpdateConstantBuffer(uint32_t bufferIndex);
-    //void DebugPrintMaterialMapping();
+    void DebugPrintMaterialMapping();
 
     void WaitForGpu();
     void WaitForPreviousFrame();
@@ -105,6 +108,7 @@ private:
         SceneObject& outObject,
         const MaterialPaths& paths);
 
+    // Создание VB/IB для объекта
     void CreateMeshBuffers(SceneObject& obj);
 
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_geometryRootSignature;
@@ -132,16 +136,18 @@ private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_pipelineState;
 
-    static constexpr UINT kMaxObjects = 8;
+    static constexpr UINT kMaxObjects = 64;
 
     Microsoft::WRL::ComPtr<ID3D12Resource> m_constantBuffer[kFrameCount][kMaxObjects];
     void* m_cbvDataBegin[kFrameCount][kMaxObjects] = {};
 
+    // Текстуры — один общий SRV heap на все модели
     std::vector<Texture> m_textures;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_srvHeap;
     UINT m_srvHeapCapacity = 0;
     UINT m_srvHeapUsed = 0;
 
+    // Сцена
     std::vector<SceneObject> m_objects;
 
     Camera m_camera;

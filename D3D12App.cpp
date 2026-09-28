@@ -45,6 +45,78 @@ void D3D12App::Shutdown() {
     }
 }
 
+static int RegisterTexture(ID3D12Device* device,
+    ID3D12DescriptorHeap* heap,
+    UINT& used,
+    UINT capacity,
+    UINT descriptorSize,
+    const Texture& tex)
+{
+    if (used >= capacity) return -1;
+
+    D3D12_CPU_DESCRIPTOR_HANDLE handle = heap->GetCPUDescriptorHandleForHeapStart();
+    handle.ptr += (UINT64)used * descriptorSize;
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    srvDesc.Format = tex.format;
+    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srvDesc.Texture2D.MipLevels = 1;
+
+    device->CreateShaderResourceView(tex.resource.Get(), &srvDesc, handle);
+    return (int)used++;
+}
+
+static SceneObject CreateUVSphere(float radius, int segments, int rings) {
+    SceneObject sphere;
+
+    for (int y = 0; y <= rings; ++y) {
+        float v = (float)y / rings;
+        float phi = v * XM_PI;   // 0..PI
+
+        for (int x = 0; x <= segments; ++x) {
+            float u = (float)x / segments;
+            float theta = u * XM_2PI;   // 0..2PI
+
+            float px = radius * sinf(phi) * cosf(theta);
+            float py = radius * cosf(phi);
+            float pz = radius * sinf(phi) * sinf(theta);
+
+            Vertex vtx;
+            vtx.position = XMFLOAT3(px, py, pz);
+            vtx.normal = XMFLOAT3(px / radius, py / radius, pz / radius);
+            vtx.texcoord = XMFLOAT2(u, v);
+            sphere.vertices.push_back(vtx);
+        }
+    }
+
+    for (int y = 0; y < rings; ++y) {
+        for (int x = 0; x < segments; ++x) {
+            uint32_t a = y * (segments + 1) + x;
+            uint32_t b = a + segments + 1;
+
+            sphere.indices.push_back(a);
+            sphere.indices.push_back(b);
+            sphere.indices.push_back(a + 1);
+
+            sphere.indices.push_back(a + 1);
+            sphere.indices.push_back(b);
+            sphere.indices.push_back(b + 1);
+        }
+    }
+
+    Material mat;
+    mat.name = "sphere";
+    sphere.materials.push_back(mat);
+    sphere.materialStartIndex.push_back(0);
+    sphere.materialIndexCount.push_back((uint32_t)sphere.indices.size());
+    sphere.indexCount = (uint32_t)sphere.indices.size();
+    sphere.hasTextures = false;
+
+    return sphere;
+}
+
+
 
 void D3D12App::EnableDebugLayer() {
 #ifdef _DEBUG
@@ -231,12 +303,24 @@ bool D3D12App::Initialize(HWND hwnd) {
         ThrowIfFailed(m_commandList->Reset(m_commandAllocators[0].Get(), nullptr));
 
         {
+            Texture defaultTex = TextureLoader::CreateDefaultTexture(
+                m_device.Get(), m_commandList.Get());
+            int idx = RegisterTexture(m_device.Get(), m_srvHeap.Get(),
+                m_srvHeapUsed, m_srvHeapCapacity,
+                m_srvDescriptorSize, defaultTex);
+            m_textures.push_back(std::move(defaultTex));
+            char buf[64];
+            sprintf_s(buf, "[SRV] Default white -> srv %d\n", idx);
+            OutputDebugStringA(buf);
+        }
+
+        {
             MaterialPaths paths;
             paths.albedo = "assets/Cerberus_by_Andrew_Maximov/Textures/Cerberus_A.jpg";
             paths.normal = "assets/Cerberus_by_Andrew_Maximov/Textures/Cerberus_N.jpg";
             paths.roughness = "assets/Cerberus_by_Andrew_Maximov/Textures/Cerberus_R.jpg";
             paths.metallic = "assets/Cerberus_by_Andrew_Maximov/Textures/Cerberus_M.jpg";
-            paths.ao = "";  
+            paths.ao = ""; 
 
             SceneObject cerberus;
             XMFLOAT4X4 world;
@@ -270,6 +354,43 @@ bool D3D12App::Initialize(HWND hwnd) {
             {
                 m_objects.push_back(std::move(woodRoot));
             }
+        }
+
+        {
+            const int   rows = 6;      // Z — roughness
+            const int   cols = 6;      // X — metallic
+            const float spacing = 0.6f;   
+            const float radius = 0.25f;
+            const float gridZ = -3.0f;  
+            const float baseY = radius; 
+
+            for (int r = 0; r < rows; ++r) {
+                for (int c = 0; c < cols; ++c) {
+                    SceneObject sphere = CreateUVSphere(radius, 32, 16);
+
+                    XMFLOAT4X4 world;
+                    XMStoreFloat4x4(&world, XMMatrixTranslation(
+                        (c - (cols - 1) * 0.5f) * spacing,
+                        baseY,
+                        gridZ + (r - (rows - 1) * 0.5f) * spacing
+                    ));
+                    sphere.world = world;
+
+                    Material& mat = sphere.materials[0];
+                    mat.roughnessFactor = (float)r / (float)(rows - 1);   // 0..1
+                    mat.metallicFactor = (float)c / (float)(cols - 1);   // 0..1
+                    mat.aoFactor = 1.0f;
+                    mat.albedoFactor = XMFLOAT3(0.95f, 0.95f, 0.95f);  // светло-серый
+
+
+                    CreateMeshBuffers(sphere);
+
+
+                    m_objects.push_back(std::move(sphere));
+                }
+            }
+
+            OutputDebugStringA("[Grid] Material grid 6x6 created\n");
         }
 
         if (m_objects.empty()) {
@@ -320,6 +441,7 @@ void D3D12App::UpdateConstantBuffer(uint32_t frameIndex) {
         XMMATRIX world = XMLoadFloat4x4(&m_objects[o].world);
         XMMATRIX wvp = world * view * proj;
 
+        auto& obj = m_objects[o];
         SceneConstantBuffer cb = {};
         XMStoreFloat4x4(&cb.worldViewProj, XMMatrixTranspose(wvp));
         XMStoreFloat4x4(&cb.world, XMMatrixTranspose(world));
@@ -328,13 +450,19 @@ void D3D12App::UpdateConstantBuffer(uint32_t frameIndex) {
         cb.lightColor = XMFLOAT4(1.0f, 0.95f, 0.8f, 1.0f);
         cb.cameraPos = XMFLOAT4(cameraPos.x, cameraPos.y, cameraPos.z, 1.0f);
 
-        cb.materialAmbient = XMFLOAT4(0.3f, 0.25f, 0.2f, 1.0f);
-        cb.materialDiffuse = XMFLOAT4(0.9f, 0.8f, 0.7f, 1.0f);
-        cb.materialSpecular = XMFLOAT4(0.2f, 0.2f, 0.2f, 1.0f);
-        cb.materialShininess = 16.0f;
+
 
         cb.textureScale = XMFLOAT2(1.0f, 1.0f);
         cb.textureOffset = XMFLOAT2(0.0f, 0.0f);
+
+        const Material& mat = obj.materials.empty() ? Material{} : obj.materials[0];
+        cb.materialFactor = XMFLOAT4(
+            mat.roughnessFactor,
+            mat.metallicFactor,
+            mat.aoFactor,
+            obj.hasTextures ? 1.0f : 0.0f    
+        );
+   
 
         memcpy(m_cbvDataBegin[frameIndex][o], &cb, sizeof(SceneConstantBuffer));
     }
@@ -441,7 +569,7 @@ void D3D12App::CreateGeometryPassPipelineState() {
 
     psoDesc.SampleMask = UINT_MAX;
     psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    psoDesc.NumRenderTargets = 4; // Albedo, WorldPos, Normal, PBR
+    psoDesc.NumRenderTargets = 4; 
 
     psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
     psoDesc.RTVFormats[1] = DXGI_FORMAT_R16G16B16A16_FLOAT;
@@ -563,6 +691,7 @@ void D3D12App::RenderFrame() {
 }
 
 
+
 void D3D12App::WaitForPreviousFrame() {
     if (m_fence->GetCompletedValue() < m_fenceValue) {
         ThrowIfFailed(m_fence->SetEventOnCompletion(m_fenceValue, m_fenceEvent), "SetEventOnCompletion");
@@ -660,7 +789,8 @@ void D3D12App::OnKeyDown(WPARAM wParam) {
 
         XMFLOAT3 camPos = m_camera.GetPosition();
 
-        const float aimHeight = 2.0f;    
+        // Точка, куда летит снаряд (можно независимо от target камеры)
+        const float aimHeight = 2.0f;     // выше центра модели
         XMFLOAT3 aimPoint = { 0.0f, aimHeight, 0.0f };
 
         XMFLOAT3 toAim = {
@@ -673,7 +803,7 @@ void D3D12App::OnKeyDown(WPARAM wParam) {
         XMStoreFloat3(&dir, dirV);
 
         const float spawnForward = 1.0f;    // вперёд от камеры
-        const float spawnUp = 0.3f;   
+        const float spawnUp = 0.3f;    // ← дополнительный подъём точки старта
 
         XMFLOAT3 spawn = {
             camPos.x + dir.x * spawnForward,
@@ -699,28 +829,6 @@ void D3D12App::ResetCamera() {
 }
 
 
-static int RegisterTexture(ID3D12Device* device,
-    ID3D12DescriptorHeap* heap,
-    UINT& used,
-    UINT capacity,
-    UINT descriptorSize,
-    const Texture& tex)
-{
-    if (used >= capacity) return -1;
-
-    D3D12_CPU_DESCRIPTOR_HANDLE handle = heap->GetCPUDescriptorHandleForHeapStart();
-    handle.ptr += (UINT64)used * descriptorSize;
-
-    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-    srvDesc.Format = tex.format;
-    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    srvDesc.Texture2D.MipLevels = 1;
-
-    device->CreateShaderResourceView(tex.resource.Get(), &srvDesc, handle);
-    return (int)used++;
-}
-
 bool D3D12App::LoadSceneObject(const std::string& objPath,
     const std::string& basePath,
     const DirectX::XMFLOAT4X4& world,
@@ -738,6 +846,7 @@ bool D3D12App::LoadSceneObject(const std::string& objPath,
         outObject.indexCount = (UINT)outObject.indices.size();
         outObject.world = world;
 
+        // Проверка существования файла
         auto fileExists = [](const std::string& path) -> bool {
             if (path.empty()) return false;
             DWORD attrs = GetFileAttributesA(path.c_str());
@@ -824,14 +933,17 @@ bool D3D12App::LoadSceneObject(const std::string& objPath,
             mat.metallicSrv = m;
             mat.aoSrv = o;
             mat.normalSrv = n;
-//
-            mat.textureIndex = a;   
+
+            mat.textureIndex = a;   // legacy — geometry pass использует как базовый индекс
 
             char buf[256];
             sprintf_s(buf, "[Material] '%s': base=%d (A=%d R=%d M=%d AO=%d N=%d)\n",
                 mat.name.c_str(), a, a, r, m, o, n);
             OutputDebugStringA(buf);
         }
+
+        outObject.hasTextures = !outObject.materials.empty() &&
+            outObject.materials[0].albedoSrv >= 0;
 
         CreateMeshBuffers(outObject);
 
@@ -868,6 +980,7 @@ void D3D12App::CreateMeshBuffers(SceneObject& obj) {
     bufferDesc.SampleDesc.Count = 1;
     bufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
+    // ---- Vertex buffer ----
     const UINT vbSize = (UINT)(sizeof(Vertex) * obj.vertices.size());
     bufferDesc.Width = vbSize;
 
@@ -886,6 +999,7 @@ void D3D12App::CreateMeshBuffers(SceneObject& obj) {
         D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
         IID_PPV_ARGS(&obj.vertexBuffer)), "Create VB");
 
+    // ---- Index buffer ----
     const UINT ibSize = (UINT)(sizeof(uint32_t) * obj.indices.size());
     bufferDesc.Width = ibSize;
 
@@ -903,6 +1017,7 @@ void D3D12App::CreateMeshBuffers(SceneObject& obj) {
         D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
         IID_PPV_ARGS(&obj.indexBuffer)), "Create IB");
 
+    // ---- Копирование ----
     m_commandList->CopyResource(obj.vertexBuffer.Get(), obj.vbUpload.Get());
     m_commandList->CopyResource(obj.indexBuffer.Get(), obj.ibUpload.Get());
 

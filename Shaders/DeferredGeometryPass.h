@@ -8,13 +8,10 @@ namespace Shaders {
             float4 lightPos;
             float4 lightColor;
             float4 cameraPos;
-            float4 materialAmbient;
-            float4 materialDiffuse;
-            float4 materialSpecular;
-            float materialShininess;
             float2 textureScale;
             float2 textureOffset;
-            float2 padding;
+            float4 materialFactor;   // .w = useMaterialTextures
+            float4 padding[2];
         }
 
         struct VSInput {
@@ -42,6 +39,19 @@ namespace Shaders {
     )";
 
     static const char* GeometryPS = R"(
+
+        cbuffer SceneConstantBuffer : register(b0) {
+            float4x4 worldViewProj;
+            float4x4 world;
+            float4 lightPos;
+            float4 lightColor;
+            float4 cameraPos;
+            float2 textureScale;
+            float2 textureOffset;
+            float4 materialFactor;   // .w = useMaterialTextures
+            float4 padding[2];
+        }
+
         struct PSInput {
             float4 position : SV_POSITION;
             float3 worldPos : TEXCOORD0;
@@ -78,6 +88,13 @@ namespace Shaders {
             float roughness = RoughnessTexture.Sample(LinearSampler, input.texcoord).r;
             float metallic  = MetallicTexture.Sample(LinearSampler, input.texcoord).r;
             float ao        = AOTexture.Sample(LinearSampler, input.texcoord).r;
+
+
+            if (materialFactor.w < 0.5) {
+                roughness = materialFactor.x;
+                metallic  = materialFactor.y;
+                ao        = materialFactor.z;
+            }
 
             output.pbr = float4(roughness, metallic, ao, 1.0f);
             return output;

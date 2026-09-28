@@ -18,18 +18,26 @@ void RenderingSystem::Initialize(ID3D12Device* device, UINT width, UINT height) 
     m_width = width;
     m_height = height;
 
+    // Создаем кучи дескрипторов для GBuffer
     D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
     rtvHeapDesc.NumDescriptors = GBuffer::GB_COUNT;
     rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
     rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    //rtvHeapDesc.NodeMask = 1;
     device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&m_gbufferRtvHeap));
 
     D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
-    srvHeapDesc.NumDescriptors = GBuffer::GB_COUNT + 16 + 3;  
+    srvHeapDesc.NumDescriptors = GBuffer::GB_COUNT + 16 + 3;  // +3 для IBL
     srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-
+    //srvHeapDesc.NodeMask = 1;
     device->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&m_gbufferSrvHeap));
+    
+    
+    char buf[256];
+    sprintf_s(buf, "[RS] gbufferSrvHeap created, NumDescriptors=%u\n",
+        (unsigned)srvHeapDesc.NumDescriptors);
+    OutputDebugStringA(buf);
 
     UINT rtvSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
     UINT srvSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
@@ -37,10 +45,11 @@ void RenderingSystem::Initialize(ID3D12Device* device, UINT width, UINT height) 
 
     m_gbuffer->Initialize(device, width, height);
 
+    // Теперь передаем m_gbufferSrvHeap как параметр
     m_gbuffer->CreateDescriptors(device,
         m_gbufferRtvHeap->GetCPUDescriptorHandleForHeapStart(),
         m_gbufferSrvHeap->GetCPUDescriptorHandleForHeapStart(),
-        m_gbufferSrvHeap.Get(),  
+        m_gbufferSrvHeap.Get(),  // <-- Вот как передается srvHeap
         rtvSize, srvSize);
 
     CreateLightBuffers(device);
@@ -50,16 +59,85 @@ void RenderingSystem::Initialize(ID3D12Device* device, UINT width, UINT height) 
 
     ClearLights();
 
-  
-    Light ambient;
-    ambient.type = LightType::Point;
-    ambient.position = XMFLOAT3(0.0f, 6.0f, 0.0f);
-    ambient.color = XMFLOAT4(0.8f, 0.85f, 1.0f, 1.0f);
-    ambient.intensity = 1.0f;
-    ambient.range = 30.0f;
-    AddLight(ambient);
+    //// Основной направленный свет (солнце) - теплый оттенок
+    Light sunLight;
+    sunLight.type = LightType::Directional;
+    sunLight.direction = XMFLOAT3(0.3f, -0.8f, 0.5f);  // Направление солнца
+    sunLight.color = XMFLOAT4(1.0f, 0.9f, 0.7f, 1.0f);  // Теплый солнечный цвет
+    sunLight.intensity = 0.8f;
+    AddLight(sunLight);
 
-    
+
+    Light sunLight2;
+    sunLight2.type = LightType::Directional;
+    sunLight2.direction = XMFLOAT3(-0.5f, -0.3f, -0.7f);
+    sunLight2.color = XMFLOAT4(0.8f, 0.9f, 1.0f, 1.0f);
+    sunLight2.intensity = 1.5f;
+    AddLight(sunLight2);
+
+    // Точечный свет в центре атриума (теплый)
+    Light centerLight;
+    centerLight.type = LightType::Point;
+    centerLight.position = XMFLOAT3(0.0f, 4.0f, 0.0f);
+    centerLight.color = XMFLOAT4(1.0f, 0.85f, 0.6f, 1.0f);
+    centerLight.intensity = 5.0f;
+    centerLight.range = 15.0f;
+    AddLight(centerLight);
+
+    //Light ambient;
+    //ambient.type = LightType::Point;
+    //ambient.position = XMFLOAT3(0.0f, 6.0f, 0.0f);
+    //ambient.color = XMFLOAT4(0.8f, 0.85f, 1.0f, 1.0f);
+    //ambient.intensity = 1.0f;
+    //ambient.range = 30.0f;
+    //AddLight(ambient);
+
+    ////// Боковые точечные источники для подсветки колонн
+    //Light leftColumn;
+    //leftColumn.type = LightType::Point;
+    //leftColumn.position = XMFLOAT3(-6.0f, 3.0f, -3.0f);
+    //leftColumn.color = XMFLOAT4(0.9f, 0.8f, 0.7f, 1.0f);
+    //leftColumn.intensity = 10.0f;
+    //leftColumn.range = 10.0f;
+    //AddLight(leftColumn);
+
+    //Light rightColumn;
+    //rightColumn.type = LightType::Point;
+    //rightColumn.position = XMFLOAT3(6.0f, 3.0f, 3.0f);
+    //rightColumn.color = XMFLOAT4(0.9f, 0.8f, 0.7f, 1.0f);
+    //rightColumn.intensity = 10.0f;
+    //rightColumn.range = 10.0f;
+    //AddLight(rightColumn);
+
+    //////// Свет сзади для подсветки задней стены
+    //Light backWall;
+    //backWall.type = LightType::Point;
+    //backWall.position = XMFLOAT3(0.0f, 5.0f, -8.0f);
+    //backWall.color = XMFLOAT4(1.0f, 0.85f, 0.7f, 1.0f);
+    //backWall.intensity = 8.0f;
+    //backWall.range = 12.0f;
+    //AddLight(backWall);
+
+    //////// Передний свет для подсветки входа
+    //Light frontLight;
+    //frontLight.type = LightType::Point;
+    //frontLight.position = XMFLOAT3(0.0f, 3.0f, 8.0f);
+    //frontLight.color = XMFLOAT4(0.8f, 0.9f, 1.0f, 1.0f);  // Немного холоднее для контраста
+    //frontLight.intensity = 12.0f;
+    //frontLight.range = 14.0f;
+    //AddLight(frontLight);
+
+    //////// Spot свет сверху - как свет через окно
+    //Light skylight;
+    //skylight.type = LightType::Spot;
+    //skylight.position = XMFLOAT3(0.0f, 10.0f, 0.0f);
+    //skylight.direction = XMFLOAT3(0.0f, -1.0f, 0.1f);
+    //skylight.color = XMFLOAT4(1.0f, 0.95f, 0.85f, 1.0f);
+    //skylight.intensity = 25.0f;
+    //skylight.range = 25.0f;
+    //skylight.spotAngle = 40.0f * XM_PI / 180.0f;
+    //AddLight(skylight);
+
 
     m_globalIntensity = 0.1f;
 
@@ -68,9 +146,12 @@ void RenderingSystem::Initialize(ID3D12Device* device, UINT width, UINT height) 
 void RenderingSystem::CreateIBLResources(ID3D12Device* device,
     ID3D12GraphicsCommandList* cmdList)
 {
-    const UINT iblBase = GBuffer::GB_COUNT;  
-    UINT srvSize = m_srvDescriptorSize;       
+    // Используем ОДИН общий SRV heap: m_gbufferSrvHeap.
+    // GBuffer: слоты 0..3, IBL: слоты 4..6 (сразу после GBuffer).
+    const UINT iblBase = GBuffer::GB_COUNT;   // = 4
+    UINT srvSize = m_srvDescriptorSize;        // сохранён в Initialize
 
+    // ---- Лямбда: загрузка DDS ----
     auto loadDDS = [&](const wchar_t* path,
         ComPtr<ID3D12Resource>& outTexture,
         std::unique_ptr<uint8_t[]>& outDdsData,
@@ -100,6 +181,7 @@ void RenderingSystem::CreateIBLResources(ID3D12Device* device,
             return true;
         };
 
+    // ---- Лямбда: загрузка + upload + барьер ----
     auto uploadAndBarrier = [&](const wchar_t* path,
         ComPtr<ID3D12Resource>& outTexture,
         bool* outIsCube) -> bool
@@ -111,8 +193,10 @@ void RenderingSystem::CreateIBLResources(ID3D12Device* device,
                 return false;
             }
 
+            // Сохраняем ddsData, чтобы буфер не удалился до WaitForGpu
             m_iblDdsData.push_back(std::move(ddsData));
 
+            // Upload buffer
             const UINT64 uploadSize = GetRequiredIntermediateSize(
                 outTexture.Get(), 0, (UINT)subresources.size());
 
@@ -151,10 +235,12 @@ void RenderingSystem::CreateIBLResources(ID3D12Device* device,
             barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
             cmdList->ResourceBarrier(1, &barrier);
 
+            // Держим upload-буфер живым до конца работы RenderingSystem
             m_iblUploadBuffers.push_back(uploadBuffer);
             return true;
         };
 
+    // ---- Загрузка трёх .dds ----
     bool isCube = false;
     if (!uploadAndBarrier(L"assets/ibl/IrradianceMap_BC6U.dds",
         m_irradianceMap, &isCube)) {
@@ -172,6 +258,7 @@ void RenderingSystem::CreateIBLResources(ID3D12Device* device,
         return;
     }
 
+    // ---- SRV: irradiance (TextureCube) — слот iblBase+0 ----
     {
         D3D12_CPU_DESCRIPTOR_HANDLE handle =
             m_gbufferSrvHeap->GetCPUDescriptorHandleForHeapStart();
@@ -188,6 +275,7 @@ void RenderingSystem::CreateIBLResources(ID3D12Device* device,
         device->CreateShaderResourceView(m_irradianceMap.Get(), &srvDesc, handle);
     }
 
+    // ---- SRV: prefiltered (TextureCube) — слот iblBase+1 ----
     {
         D3D12_CPU_DESCRIPTOR_HANDLE handle =
             m_gbufferSrvHeap->GetCPUDescriptorHandleForHeapStart();
@@ -203,6 +291,11 @@ void RenderingSystem::CreateIBLResources(ID3D12Device* device,
 
         device->CreateShaderResourceView(m_prefilteredMap.Get(), &srvDesc, handle);
     }
+
+    char buf[256];
+    sprintf_s(buf, "[IBL] iblBase=%u, heapCapacity=22\n",
+        (unsigned)iblBase);
+    OutputDebugStringA(buf);
 
     {
         D3D12_CPU_DESCRIPTOR_HANDLE handle =
@@ -354,8 +447,8 @@ TextureCube       IrradianceMap   : register(t4);
 TextureCube       PrefilteredMap  : register(t5);
 Texture2D<float4> BRDF_LUT        : register(t6);
 
-SamplerState LinearSampler : register(s0);     
-SamplerState IBLSampler    : register(s1);   
+SamplerState LinearSampler : register(s0);      // GBuffer (point)
+SamplerState IBLSampler    : register(s1);      // IBL (linear, для кубомапов)
 
 struct LightData {
     float4 position_type;
@@ -373,6 +466,7 @@ cbuffer LightCB : register(b0) {
 
 static const float PI = 3.14159265359;
 
+// --- Cook-Torrance BRDF ---
 float D_GGX(float NdotH, float roughness) {
     float a  = roughness * roughness;
     float a2 = a * a;
@@ -419,21 +513,27 @@ float3 CookTorrance(float3 N, float3 V, float3 L, float3 radiance,
     return (kD * albedo / PI + specular) * radiance * NdotL;
 }
 
+// --- Split-sum IBL ---
 float3 IBL(float3 N, float3 V, float3 albedo, float roughness, float metallic) {
     float3 F0 = lerp(float3(0.04, 0.04, 0.04), albedo, metallic);
     float3 R  = reflect(-V, N);
     float  NdotV = saturate(dot(N, V)) + 1e-4;
 
+    // Diffuse: irradiance map
     float3 irradiance = IrradianceMap.Sample(IBLSampler, N).rgb;
 
+    // Specular: prefiltered map (mip = roughness)
+    // У prefiltered 12 mips, значит max LOD = 11.
     float maxMip = 11.0;
     float mip = roughness * maxMip;
-    float3 prefilteredColor = PrefilteredMap.SampleLevel(IBLSampler, R, mip).rgb;
+    float3 prefilteredColor = PrefilteredMap.SampleLevel(IBLSampler, R, mip).rgb * 4.0;
 
+    // BRDF LUT
     float2 brdf = BRDF_LUT.Sample(IBLSampler, float2(NdotV, roughness)).rg;
 
     float3 specular = prefilteredColor * (F0 * brdf.x + brdf.y);
 
+    // kD
     float3 F  = F_Schlick(NdotV, F0);
     float3 kD = (1.0 - F) * (1.0 - metallic);
 
@@ -480,17 +580,21 @@ float4 main(float4 position : SV_POSITION) : SV_TARGET {
         Lo += CookTorrance(N, V, L, radiance, albedo, roughness, metallic);
     }
 
+    // ==== IBL ambient ====
     float3 ambient = IBL(N, V, albedo, roughness, metallic) * ao;
     float3 color = ambient + Lo;
 
+    // ==== Skybox (фон) ====
     if (dot(worldPos.xyz, worldPos.xyz) < 0.0001) {
-        float2 uv = position.xy / float2(1024.0, 768.0);  
+        // Мягкий градиент: сверху светлее, снизу темнее
+        float2 uv = position.xy / float2(1024.0, 768.0);   // хардкод разрешения
         float3 skyTop    = float3(0.15, 0.20, 0.30);
         float3 skyBottom = float3(0.03, 0.03, 0.05);
         float3 bg = lerp(skyBottom, skyTop, 1.0 - uv.y);
         color = bg;
     }
 
+    // ACES Filmic tonemap (Narkowicz approximation)
     const float a = 2.51;
     const float b = 0.03;
     const float c = 2.43;
@@ -499,6 +603,7 @@ float4 main(float4 position : SV_POSITION) : SV_TARGET {
     float3 mapped = saturate((color * (a * color + b)) /
                              (color * (c * color + d) + e));
 
+    // Gamma 2.2
     float3 gamma = pow(mapped, float3(1.0 / 2.2, 1.0 / 2.2, 1.0 / 2.2));
 
     return float4(gamma, 1.0);
@@ -522,6 +627,7 @@ float4 main(float4 position : SV_POSITION) : SV_TARGET {
         throw std::runtime_error("Failed to compile lighting PS");
     }
 
+    // GBuffer SRV: t0..t3
     D3D12_DESCRIPTOR_RANGE gbufferRange = {};
     gbufferRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
     gbufferRange.NumDescriptors = 4;
@@ -529,6 +635,7 @@ float4 main(float4 position : SV_POSITION) : SV_TARGET {
     gbufferRange.RegisterSpace = 0;
     gbufferRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
+    // IBL SRV: t4..t6
     D3D12_DESCRIPTOR_RANGE iblRange = {};
     iblRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
     iblRange.NumDescriptors = 3;
@@ -538,16 +645,19 @@ float4 main(float4 position : SV_POSITION) : SV_TARGET {
 
     D3D12_ROOT_PARAMETER rootParams[3] = {};
 
+    // Param 0: GBuffer SRV (t0..t3)
     rootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     rootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     rootParams[0].DescriptorTable.NumDescriptorRanges = 1;
     rootParams[0].DescriptorTable.pDescriptorRanges = &gbufferRange;
 
+    // Param 1: CBV света
     rootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     rootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     rootParams[1].Descriptor.ShaderRegister = 0;
     rootParams[1].Descriptor.RegisterSpace = 0;
 
+    // Param 2: IBL SRV (t4..t6)
     rootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     rootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     rootParams[2].DescriptorTable.NumDescriptorRanges = 1;
@@ -580,7 +690,7 @@ float4 main(float4 position : SV_POSITION) : SV_TARGET {
     ibSampler.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
     ibSampler.MinLOD = 0;
     ibSampler.MaxLOD = D3D12_FLOAT32_MAX;
-    ibSampler.ShaderRegister = 1;  
+    ibSampler.ShaderRegister = 1;   // ← важно: s1, а не s0
     ibSampler.RegisterSpace = 0;
     ibSampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
@@ -866,6 +976,7 @@ void RenderingSystem::CreateLightVisPipeline(ID3D12Device* device) {
         float4 clip = mul(float4(lightPos.xyz, 1.0), viewProj);
 
         VSOut o;
+        // Отсечение, если за камерой
         if (clip.w <= 0.001) {
             o.pos   = float4(0, 0, -2, 1);
             o.local = float2(0, 0);
@@ -940,7 +1051,7 @@ void RenderingSystem::CreateLightVisPipeline(ID3D12Device* device) {
     pso.pRootSignature = m_lightVisRootSig.Get();
     pso.VS = { vs->GetBufferPointer(), vs->GetBufferSize() };
     pso.PS = { ps->GetBufferPointer(), ps->GetBufferSize() };
-    pso.InputLayout = { nullptr, 0 };  // процедурные вершины
+    pso.InputLayout = { nullptr, 0 }; 
     pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     pso.NumRenderTargets = 1;
     pso.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
