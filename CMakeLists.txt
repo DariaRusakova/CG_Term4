@@ -15,6 +15,7 @@ set(SOURCES
     Camera/Camera.cpp
     Model/ModelLoader.cpp
     Texture/TextureLoader.cpp
+    Terrain/TerrainLoader.cpp
     Rendering/GBuffer.cpp
     Rendering/RenderingSystem.cpp
     Rendering/Light.cpp

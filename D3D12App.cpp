@@ -10,10 +10,12 @@
 #include <fstream>
 #include <stdexcept>
 #include <windows.h>
+#include "Terrain/TerrainLoader.h"
 
 using namespace DirectX;
 using Microsoft::WRL::ComPtr;
 
+// Вспомогательная функция
 inline void ThrowIfFailed(HRESULT hr, const char* errorMsg = "") {
     if (FAILED(hr)) {
         char buffer[512];
@@ -117,6 +119,9 @@ static SceneObject CreateUVSphere(float radius, int segments, int rings) {
 }
 
 
+// ==============================================
+// Инициализация
+// ==============================================
 
 void D3D12App::EnableDebugLayer() {
 #ifdef _DEBUG
@@ -238,6 +243,7 @@ void D3D12App::CreateDepthStencil() {
 }
 
 void D3D12App::CreateSRVHeap() {
+    // Резервируем с запасом: 2 модели * ~6 карт + fallback
     m_srvHeapCapacity = 64;
 
     D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
@@ -297,8 +303,47 @@ bool D3D12App::Initialize(HWND hwnd) {
         m_renderingSystem = std::make_unique<RenderingSystem>();
         m_renderingSystem->Initialize(m_device.Get(), kWidth, kHeight);
 
+        // SRV heap заранее — до загрузки текстур
         CreateSRVHeap();
 
+
+        {
+            float globalMin = 1e9f;
+            float globalMax = -1e9f;
+
+            for (int y = 0; y < 4; ++y) {
+                for (int x = 0; x < 4; ++x) {
+                    char path[256];
+                    sprintf_s(path, "assets/volcano/Erosion2/Erosion2_Out_y%d_x%d.png", y, x);
+
+                    int w = 0, h = 0;
+                    auto height = TerrainLoader::LoadHeightmap(path, w, h);
+                    if (height.empty()) continue;
+
+                    float minH = 1e9f, maxH = -1e9f, sum = 0.0f;
+                    for (float v : height) {
+                        minH = (v < minH) ? v : minH;
+                        maxH = (v > maxH) ? v : maxH;
+                        sum += v;
+                    }
+
+                    if (minH < globalMin) globalMin = minH;
+                    if (maxH > globalMax) globalMax = maxH;
+
+                    char buf[256];
+                    sprintf_s(buf, "[Tile %d,%d] min=%.4f max=%.4f avg=%.4f\n",
+                        y, x, minH, maxH, sum / height.size());
+                    OutputDebugStringA(buf);
+                }
+            }
+
+            char buf[256];
+            sprintf_s(buf, "[Terrain] GLOBAL: min=%.4f max=%.4f\n", globalMin, globalMax);
+            OutputDebugStringA(buf);
+        }
+
+
+        // Один Reset на обе модели
         ThrowIfFailed(m_commandAllocators[0]->Reset());
         ThrowIfFailed(m_commandList->Reset(m_commandAllocators[0].Get(), nullptr));
 
@@ -314,13 +359,14 @@ bool D3D12App::Initialize(HWND hwnd) {
             OutputDebugStringA(buf);
         }
 
+        // Cerberus — слева
         {
             MaterialPaths paths;
             paths.albedo = "assets/Cerberus_by_Andrew_Maximov/Textures/Cerberus_A.jpg";
             paths.normal = "assets/Cerberus_by_Andrew_Maximov/Textures/Cerberus_N.jpg";
             paths.roughness = "assets/Cerberus_by_Andrew_Maximov/Textures/Cerberus_R.jpg";
             paths.metallic = "assets/Cerberus_by_Andrew_Maximov/Textures/Cerberus_M.jpg";
-            paths.ao = ""; 
+            paths.ao = "";  // AO-карты у Cerberus нет
 
             SceneObject cerberus;
             XMFLOAT4X4 world;
@@ -335,13 +381,14 @@ bool D3D12App::Initialize(HWND hwnd) {
             }
         }
 
+        // Wood root — справа
         {
             MaterialPaths paths;
             paths.albedo = "assets/wood_root/Aset_wood_root_M_rkswd_2K_Albedo.jpg";
             paths.normal = "assets/wood_root/Aset_wood_root_M_rkswd_2K_Normal_LOD0.jpg";
             paths.roughness = "assets/wood_root/Aset_wood_root_M_rkswd_2K_Roughness.jpg";
-            paths.metallic = ""; 
-            paths.ao = "";  
+            paths.metallic = "";  // metallic-карты у wood_root нет 
+            paths.ao = "";  // AO-карты у wood_root нет
 
             SceneObject woodRoot;
             XMFLOAT4X4 world;
@@ -356,43 +403,6 @@ bool D3D12App::Initialize(HWND hwnd) {
             }
         }
 
-        {
-            const int   rows = 6;      // Z — roughness
-            const int   cols = 6;      // X — metallic
-            const float spacing = 0.6f;   
-            const float radius = 0.25f;
-            const float gridZ = -3.0f;  
-            const float baseY = radius; 
-
-            for (int r = 0; r < rows; ++r) {
-                for (int c = 0; c < cols; ++c) {
-                    SceneObject sphere = CreateUVSphere(radius, 32, 16);
-
-                    XMFLOAT4X4 world;
-                    XMStoreFloat4x4(&world, XMMatrixTranslation(
-                        (c - (cols - 1) * 0.5f) * spacing,
-                        baseY,
-                        gridZ + (r - (rows - 1) * 0.5f) * spacing
-                    ));
-                    sphere.world = world;
-
-                    Material& mat = sphere.materials[0];
-                    mat.roughnessFactor = (float)r / (float)(rows - 1);   // 0..1
-                    mat.metallicFactor = (float)c / (float)(cols - 1);   // 0..1
-                    mat.aoFactor = 1.0f;
-                    mat.albedoFactor = XMFLOAT3(0.95f, 0.95f, 0.95f);  // светло-серый
-
-
-                    CreateMeshBuffers(sphere);
-
-
-                    m_objects.push_back(std::move(sphere));
-                }
-            }
-
-            OutputDebugStringA("[Grid] Material grid 6x6 created\n");
-        }
-
         if (m_objects.empty()) {
             OutputDebugStringA("[Scene] No models loaded\n");
             return false;
@@ -400,6 +410,7 @@ bool D3D12App::Initialize(HWND hwnd) {
 
         m_renderingSystem->CreateIBLResources(m_device.Get(), m_commandList.Get());
 
+        // Закрываем список и ждём завершения загрузки
         ThrowIfFailed(m_commandList->Close());
         ID3D12CommandList* lists[] = { m_commandList.Get() };
         m_commandQueue->ExecuteCommandLists(1, lists);
@@ -428,6 +439,9 @@ bool D3D12App::Initialize(HWND hwnd) {
 }
 
 
+// ==============================================
+// Рендеринг
+// ==============================================
 
 void D3D12App::UpdateConstantBuffer(uint32_t frameIndex) {
     m_textureAnimTime += 0.016f;
@@ -460,7 +474,7 @@ void D3D12App::UpdateConstantBuffer(uint32_t frameIndex) {
             mat.roughnessFactor,
             mat.metallicFactor,
             mat.aoFactor,
-            obj.hasTextures ? 1.0f : 0.0f    
+            obj.hasTextures ? 1.0f : 0.0f    // ← .w = useMaterialTextures
         );
    
 
@@ -471,11 +485,13 @@ void D3D12App::UpdateConstantBuffer(uint32_t frameIndex) {
 void D3D12App::CreateGeometryPassRootSignature() {
     D3D12_ROOT_PARAMETER rootParams[2];
 
+    // CBV для константного буфера сцены
     rootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     rootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     rootParams[0].Descriptor.ShaderRegister = 0;
     rootParams[0].Descriptor.RegisterSpace = 0;
 
+    // Descriptor Table для текстур
     D3D12_DESCRIPTOR_RANGE descRange = {};
     descRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
     descRange.NumDescriptors = 5;
@@ -488,6 +504,7 @@ void D3D12App::CreateGeometryPassRootSignature() {
     rootParams[1].DescriptorTable.NumDescriptorRanges = 1;
     rootParams[1].DescriptorTable.pDescriptorRanges = &descRange;
 
+    // Статический сэмплер
     D3D12_STATIC_SAMPLER_DESC sampler = {};
     sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
     sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
@@ -518,6 +535,7 @@ void D3D12App::CreateGeometryPassRootSignature() {
     ThrowIfFailed(hr, "Create geometry root signature");
 }
 
+// Замените CreatePipelineState() на:
 void D3D12App::CreateGeometryPassPipelineState() {
     ComPtr<ID3DBlob> vs, ps, error;
 
@@ -526,6 +544,7 @@ void D3D12App::CreateGeometryPassPipelineState() {
     compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
 #endif
 
+    // Компилируем геометрические шейдеры с несколькими render targets
     HRESULT hr = D3DCompile(Shaders::GeometryVS, strlen(Shaders::GeometryVS),
         "VS", nullptr, nullptr, "main", "vs_5_0", compileFlags, 0, &vs, &error);
 
@@ -541,6 +560,7 @@ void D3D12App::CreateGeometryPassPipelineState() {
         ThrowIfFailed(hr, "Compile geometry PS");
     }
 
+    // Input Layout
     D3D12_INPUT_ELEMENT_DESC inputDesc[] = {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
         { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
@@ -569,7 +589,7 @@ void D3D12App::CreateGeometryPassPipelineState() {
 
     psoDesc.SampleMask = UINT_MAX;
     psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    psoDesc.NumRenderTargets = 4; 
+    psoDesc.NumRenderTargets = 4; // Albedo, WorldPos, Normal, PBR
 
     psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
     psoDesc.RTVFormats[1] = DXGI_FORMAT_R16G16B16A16_FLOAT;
@@ -599,6 +619,7 @@ void D3D12App::RenderFrame() {
         m_commandList->RSSetViewports(1, &m_viewport);
         m_commandList->RSSetScissorRects(1, &m_scissorRect);
 
+        // Барьер для Render Target (back buffer)
         D3D12_RESOURCE_BARRIER barrier = {};
         barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
@@ -608,10 +629,12 @@ void D3D12App::RenderFrame() {
         barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
         m_commandList->ResourceBarrier(1, &barrier);
 
+        // Получаем дескрипторы
         D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = m_rtvHeap->GetCPUDescriptorHandleForHeapStart();
         rtvHandle.ptr += m_frameIndex * m_rtvDescriptorSize;
         D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = m_dsvHeap->GetCPUDescriptorHandleForHeapStart();
 
+        // Устанавливаем текстуры для геометрического прохода
         ID3D12DescriptorHeap* ppHeaps[] = { m_srvHeap.Get() };
         m_commandList->SetDescriptorHeaps(_countof(ppHeaps), ppHeaps);
 
@@ -653,6 +676,7 @@ void D3D12App::RenderFrame() {
         QueryPerformanceCounter(&now);
         float deltaTime = float(now.QuadPart - last.QuadPart) / float(freq.QuadPart);
         last = now;
+        // Ограничиваем dt, чтобы при паузах/отладке свет не "прыгал"
         if (deltaTime > 0.1f) deltaTime = 0.1f;
 
         m_shootCooldown = std::max(0.0f, m_shootCooldown - deltaTime);
@@ -661,6 +685,7 @@ void D3D12App::RenderFrame() {
         m_renderingSystem->SetGlobalIntensity(m_lightIntensity);
 
 
+        // Вызываем deferred rendering
         m_renderingSystem->Render(
             m_commandList.Get(),
             m_depthStencil.Get(),
@@ -672,6 +697,7 @@ void D3D12App::RenderFrame() {
             (UINT)renderData.size()
         );
 
+        // Барьер для Present
         barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
         barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
         m_commandList->ResourceBarrier(1, &barrier);
@@ -691,6 +717,9 @@ void D3D12App::RenderFrame() {
 }
 
 
+// ==============================================
+// Ожидание и синхронизация
+// ==============================================
 
 void D3D12App::WaitForPreviousFrame() {
     if (m_fence->GetCompletedValue() < m_fenceValue) {
@@ -711,6 +740,9 @@ void D3D12App::WaitForGpu() {
     WaitForSingleObject(m_fenceEvent, INFINITE);
 }
 
+// ==============================================
+// Управление камерой и ввод
+// ==============================================
 
 void D3D12App::OnMouseWheel(int delta) {
     float zoomAmount = (delta > 0) ? 0.5f : -0.5f;
