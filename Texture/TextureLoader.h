@@ -17,4 +17,8 @@ class TextureLoader {
 public:
     static Texture LoadTexture(ID3D12Device* device, ID3D12GraphicsCommandList* commandList, const std::string& filename);
     static Texture CreateDefaultTexture(ID3D12Device* device, ID3D12GraphicsCommandList* commandList);
+    static Texture CreateSolidTexture(
+        ID3D12Device* device,
+        ID3D12GraphicsCommandList* commandList,
+        uint8_t r, uint8_t g, uint8_t b, uint8_t a);
 };

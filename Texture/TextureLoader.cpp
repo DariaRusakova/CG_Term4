@@ -389,3 +389,82 @@ Texture TextureLoader::CreateDefaultTexture(ID3D12Device* device, ID3D12Graphics
     OutputDebugStringA("Created default white texture\n");
     return texture;
 }
+
+Texture TextureLoader::CreateSolidTexture(
+    ID3D12Device* device,
+    ID3D12GraphicsCommandList* commandList,
+    uint8_t r, uint8_t g, uint8_t b, uint8_t a)
+{
+    Texture texture;
+    texture.width = 1;
+    texture.height = 1;
+    texture.format = DXGI_FORMAT_R8G8B8A8_UNORM;
+
+    D3D12_RESOURCE_DESC texDesc = {};
+    texDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    texDesc.Width = 1;
+    texDesc.Height = 1;
+    texDesc.DepthOrArraySize = 1;
+    texDesc.MipLevels = 1;
+    texDesc.Format = texture.format;
+    texDesc.SampleDesc.Count = 1;
+    texDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+
+    D3D12_HEAP_PROPERTIES heapProps = {};
+    heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+    HRESULT hr = device->CreateCommittedResource(
+        &heapProps, D3D12_HEAP_FLAG_NONE, &texDesc,
+        D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+        IID_PPV_ARGS(&texture.resource));
+
+    if (SUCCEEDED(hr)) {
+        uint32_t pixel = (uint32_t)a << 24
+            | (uint32_t)b << 16
+            | (uint32_t)g << 8
+            | (uint32_t)r;
+        const UINT64 uploadBufferSize =
+            GetRequiredIntermediateSize(texture.resource.Get(), 0, 1);
+
+        D3D12_HEAP_PROPERTIES uploadHeapProps = {};
+        uploadHeapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
+
+        D3D12_RESOURCE_DESC uploadBufferDesc = {};
+        uploadBufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        uploadBufferDesc.Width = uploadBufferSize;
+        uploadBufferDesc.Height = 1;
+        uploadBufferDesc.DepthOrArraySize = 1;
+        uploadBufferDesc.MipLevels = 1;
+        uploadBufferDesc.Format = DXGI_FORMAT_UNKNOWN;
+        uploadBufferDesc.SampleDesc.Count = 1;
+        uploadBufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+        hr = device->CreateCommittedResource(
+            &uploadHeapProps, D3D12_HEAP_FLAG_NONE, &uploadBufferDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+            IID_PPV_ARGS(&texture.uploadHeap));
+
+        if (SUCCEEDED(hr)) {
+            D3D12_SUBRESOURCE_DATA texData = {};
+            texData.pData = &pixel;
+            texData.RowPitch = 4;
+            texData.SlicePitch = 4;
+
+            UpdateSubresources(commandList, texture.resource.Get(),
+                texture.uploadHeap.Get(), 0, 0, 1, &texData);
+
+            D3D12_RESOURCE_BARRIER barrier = {};
+            barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            barrier.Transition.pResource = texture.resource.Get();
+            barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+            barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+            barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            commandList->ResourceBarrier(1, &barrier);
+        }
+    }
+
+    char buf[128];
+    sprintf_s(buf, "Created solid texture (%u,%u,%u,%u)\n", r, g, b, a);
+    OutputDebugStringA(buf);
+    return texture;
+}

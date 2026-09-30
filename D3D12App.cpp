@@ -245,8 +245,7 @@ void D3D12App::CreateDepthStencil() {
 }
 
 void D3D12App::CreateSRVHeap() {
-    // Резервируем с запасом: 2 модели * ~6 карт + fallback
-    m_srvHeapCapacity = 64;
+    m_srvHeapCapacity = 256;
 
     D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
     srvHeapDesc.NumDescriptors = m_srvHeapCapacity;
@@ -312,6 +311,23 @@ bool D3D12App::Initialize(HWND hwnd) {
         ThrowIfFailed(m_commandList->Reset(m_commandAllocators[0].Get(), nullptr));
 
         {
+            Texture whiteTex = TextureLoader::CreateSolidTexture(
+                m_device.Get(), m_commandList.Get(), 255, 255, 255, 255);
+            m_defaultWhiteTexIndex = (int)m_textures.size();
+            m_textures.push_back(std::move(whiteTex));
+
+            Texture blackTex = TextureLoader::CreateSolidTexture(
+                m_device.Get(), m_commandList.Get(), 0, 0, 0, 255);
+            m_defaultBlackTexIndex = (int)m_textures.size();
+            m_textures.push_back(std::move(blackTex));
+
+            char buf[128];
+            sprintf_s(buf, "[SRV] Default white tex idx=%d, black tex idx=%d\n",
+                m_defaultWhiteTexIndex, m_defaultBlackTexIndex);
+            OutputDebugStringA(buf);
+        }
+
+        {
             float globalMin = 1e9f;
             float globalMax = -1e9f;
 
@@ -342,17 +358,18 @@ bool D3D12App::Initialize(HWND hwnd) {
         {
             const int tilesX = 4;
             const int tilesZ = 4;
-            const float tileSize = m_terrainWorldSize;  
+            const float tileSize = m_terrainWorldSize;
 
             for (int y = 0; y < tilesZ; ++y) {
                 for (int x = 0; x < tilesX; ++x) {
 
-                    char path[256];
-                    sprintf_s(path,
+   
+                    char pathHeight[256];
+                    sprintf_s(pathHeight,
                         "assets/volcano/Erosion2/Erosion2_Out_y%d_x%d.png", y, x);
 
                     int w = 0, h = 0;
-                    auto height = TerrainLoader::LoadHeightmap(path, w, h);
+                    auto height = TerrainLoader::LoadHeightmap(pathHeight, w, h);
                     if (height.empty()) {
                         char buf[256];
                         sprintf_s(buf, "[Terrain] Skipping tile y%d x%d (empty)\n", y, x);
@@ -367,37 +384,60 @@ bool D3D12App::Initialize(HWND hwnd) {
                         m_terrainHeightMin, m_terrainHeightMax,
                         m_terrainHeightScale);
 
+  
                     XMFLOAT4X4 world;
                     XMStoreFloat4x4(&world, XMMatrixTranslation(
                         (float)x * tileSize, 0.0f, (float)y * tileSize));
                     tile.world = world;
+
+                    char pAlbedo[256], pNormal[256], pRough[256];
+                    sprintf_s(pAlbedo,
+                        "assets/volcano/SatMap/SatMap_Out_y%d_x%d.png", y, x);
+                    sprintf_s(pNormal,
+                        "assets/volcano/Normals/Normals_Out_y%d_x%d.png", y, x);
+
+
+                    MaterialPaths paths;
+                    paths.albedo = pAlbedo;
+                    paths.normal = pNormal;
+                    paths.roughness = "";
+                    paths.metallic = "";   
+                    paths.ao = "";   
+
+                    auto& mat = tile.materials[0];
+                    mat.albedoTexturePath = paths.albedo;
+                    mat.normalTexturePath = paths.normal;
+                    mat.roughnessTexturePath = paths.roughness;
+                    mat.metallicTexturePath = paths.metallic;
+                    mat.aoTexturePath = paths.ao;
+
+                    int a, r, m, o, n;
+                    if (LoadMaterialBlock(paths, a, r, m, o, n) < 0) {
+                        OutputDebugStringA("[Terrain] LoadMaterialBlock failed\n");
+                        continue;  
+                    }
+                    mat.albedoSrv = a;
+                    mat.roughnessSrv = r;
+                    mat.metallicSrv = m;
+                    mat.aoSrv = o;
+                    mat.normalSrv = n;
+                    mat.textureIndex = a;   // geometry pass использует это как базовый индекс
+
+                    tile.hasTextures = true;
+
+  
+
+                    tile.hasTextures = true;
 
                     CreateMeshBuffers(tile);
                     m_objects.push_back(std::move(tile));
 
                     char buf[256];
                     sprintf_s(buf,
-                        "[Terrain] Tile y%d x%d: %zu verts, %zu idx at (%.0f, 0, %.0f)\n",
-                        y, x,
-                        m_objects.back().vertices.size(),
-                        m_objects.back().indices.size(),
-                        (float)x * tileSize, (float)y * tileSize);
+                        "[Terrain] Tile y%d x%d loaded with textures\n", y, x);
                     OutputDebugStringA(buf);
                 }
             }
-        }
-
-
-        {
-            Texture defaultTex = TextureLoader::CreateDefaultTexture(
-                m_device.Get(), m_commandList.Get());
-            int idx = RegisterTexture(m_device.Get(), m_srvHeap.Get(),
-                m_srvHeapUsed, m_srvHeapCapacity,
-                m_srvDescriptorSize, defaultTex);
-            m_textures.push_back(std::move(defaultTex));
-            char buf[64];
-            sprintf_s(buf, "[SRV] Default white -> srv %d\n", idx);
-            OutputDebugStringA(buf);
         }
 
         // Cerberus — слева
@@ -930,71 +970,6 @@ bool D3D12App::LoadSceneObject(const std::string& objPath,
             return attrs != INVALID_FILE_ATTRIBUTES;
             };
 
-
-        auto loadMaterialBlock = [&](const MaterialPaths& paths,
-            int& outAlbedo, int& outRoughness,
-            int& outMetallic, int& outAO, int& outNormal) -> int
-            {
-                if (m_srvHeapUsed + 5 > m_srvHeapCapacity) return -1;
-
-                int base = (int)m_srvHeapUsed;
-
-                // albedo, roughness, metallic, ao, normal
-                const std::string* paths5[5] = {
-                    &paths.albedo, &paths.roughness, &paths.metallic, &paths.ao, &paths.normal
-                };
-
-                int albedoResIdx = -1;  
-
-                if (fileExists(paths.albedo)) {
-                    Texture t = TextureLoader::LoadTexture(m_device.Get(), m_commandList.Get(), paths.albedo);
-                    albedoResIdx = (int)m_textures.size();
-                    m_textures.push_back(std::move(t));
-                }
-
-                if (albedoResIdx < 0) {
-                    OutputDebugStringA("[Mat] albedo missing\n");
-                    return -1;
-                }
-
-                D3D12_CPU_DESCRIPTOR_HANDLE heapStart = m_srvHeap->GetCPUDescriptorHandleForHeapStart();
-
-                for (int i = 0; i < 5; ++i) {
-                    int texIdx = albedoResIdx; 
-
-                    if (i > 0 && fileExists(*paths5[i])) {
-                        Texture t = TextureLoader::LoadTexture(m_device.Get(), m_commandList.Get(), *paths5[i]);
-                        texIdx = (int)m_textures.size();
-                        m_textures.push_back(std::move(t));
-                    }
-
-                    D3D12_CPU_DESCRIPTOR_HANDLE h = heapStart;
-                    h.ptr += (UINT64)(m_srvHeapUsed + i) * m_srvDescriptorSize;
-
-                    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-                    srvDesc.Format = m_textures[texIdx].format;
-                    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-                    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-                    srvDesc.Texture2D.MipLevels = 1;
-
-                    m_device->CreateShaderResourceView(m_textures[texIdx].resource.Get(), &srvDesc, h);
-
-                    char buf[256];
-                    sprintf_s(buf, "  [Mat] slot %d = srv %d (tex %d)\n",
-                        i, m_srvHeapUsed + i, texIdx);
-                    OutputDebugStringA(buf);
-                }
-
-                outAlbedo = base + 0;
-                outRoughness = base + 1;
-                outMetallic = base + 2;
-                outAO = base + 3;
-                outNormal = base + 4;
-
-                m_srvHeapUsed += 5;
-                return base;
-            };
-
         for (auto& mat : outObject.materials) {
             mat.albedoTexturePath = paths.albedo;
             mat.normalTexturePath = paths.normal;
@@ -1003,7 +978,7 @@ bool D3D12App::LoadSceneObject(const std::string& objPath,
             mat.aoTexturePath = paths.ao;
 
             int a, r, m, o, n;
-            loadMaterialBlock(paths, a, r, m, o, n);
+            LoadMaterialBlock(paths, a, r, m, o, n);
 
             mat.albedoSrv = a;
             mat.roughnessSrv = r;
@@ -1234,4 +1209,81 @@ SceneObject D3D12App::CreateTerrainTileFromHeightmap(
     tile.hasTextures = false;   
 
     return tile;
+}
+
+
+int D3D12App::LoadMaterialBlock(const MaterialPaths& paths,
+    int& outAlbedo, int& outRoughness,
+    int& outMetallic, int& outAO, int& outNormal)
+{
+    if (m_srvHeapUsed + 5 > m_srvHeapCapacity) return -1;
+
+    int base = (int)m_srvHeapUsed;
+
+    auto fileExists = [](const std::string& path) -> bool {
+        if (path.empty()) return false;
+        DWORD attrs = GetFileAttributesA(path.c_str());
+        return attrs != INVALID_FILE_ATTRIBUTES;
+        };
+
+    // Загружаем только те текстуры, что реально есть
+    int resIdx[5] = { -1, -1, -1, -1, -1 };
+    const std::string* paths5[5] = {
+        &paths.albedo, &paths.roughness, &paths.metallic, &paths.ao, &paths.normal
+    };
+
+    for (int i = 0; i < 5; ++i) {
+        if (fileExists(*paths5[i])) {
+            Texture t = TextureLoader::LoadTexture(
+                m_device.Get(), m_commandList.Get(), *paths5[i]);
+            resIdx[i] = (int)m_textures.size();
+            m_textures.push_back(std::move(t));
+        }
+    }
+
+    // albedo обязателен
+    if (resIdx[0] < 0) {
+        OutputDebugStringA("[Mat] albedo missing\n");
+        return -1;
+    }
+
+    D3D12_CPU_DESCRIPTOR_HANDLE heapStart =
+        m_srvHeap->GetCPUDescriptorHandleForHeapStart();
+
+    for (int i = 0; i < 5; ++i) {
+        int texIdx;
+        switch (i) {
+        case 0: texIdx = resIdx[0]; break;
+        case 1: texIdx = (resIdx[1] >= 0) ? resIdx[1] : m_defaultWhiteTexIndex; break;
+        case 2: texIdx = (resIdx[2] >= 0) ? resIdx[2] : m_defaultBlackTexIndex; break;
+        case 3: texIdx = (resIdx[3] >= 0) ? resIdx[3] : m_defaultWhiteTexIndex; break;
+        case 4: texIdx = (resIdx[4] >= 0) ? resIdx[4] : m_defaultWhiteTexIndex; break;
+        }
+
+        D3D12_CPU_DESCRIPTOR_HANDLE h = heapStart;
+        h.ptr += (UINT64)(m_srvHeapUsed + i) * m_srvDescriptorSize;
+
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.Format = m_textures[texIdx].format;
+        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srvDesc.Texture2D.MipLevels = 1;
+
+        m_device->CreateShaderResourceView(m_textures[texIdx].resource.Get(), &srvDesc, h);
+
+        char buf[256];
+        sprintf_s(buf, "  [Mat] slot %d (srv %u) = tex %d%s\n",
+            i, m_srvHeapUsed + i, texIdx,
+            (resIdx[i] < 0) ? " [fallback]" : "");
+        OutputDebugStringA(buf);
+    }
+
+    outAlbedo = base + 0;
+    outRoughness = base + 1;
+    outMetallic = base + 2;
+    outAO = base + 3;
+    outNormal = base + 4;
+
+    m_srvHeapUsed += 5;
+    return base;
 }

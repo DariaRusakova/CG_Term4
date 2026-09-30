@@ -147,6 +147,9 @@ private:
     UINT m_srvHeapCapacity = 0;
     UINT m_srvHeapUsed = 0;
 
+    int m_defaultWhiteTexIndex = -1;  
+    int m_defaultBlackTexIndex = -1;  
+
     // Сцена
     std::vector<SceneObject> m_objects;
 
@@ -175,4 +178,8 @@ private:
         float worldSize,      
         float heightMin, float heightMax,
         float heightScale);       
+
+    int LoadMaterialBlock(const MaterialPaths& paths,
+        int& outAlbedo, int& outRoughness,
+        int& outMetallic, int& outAO, int& outNormal);
 };
