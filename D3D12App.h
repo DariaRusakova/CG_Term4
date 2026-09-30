@@ -161,4 +161,18 @@ private:
 
     D3D12_VIEWPORT m_viewport;
     D3D12_RECT     m_scissorRect;
+
+    float m_terrainHeightMin = 0.0f;    
+    float m_terrainHeightMax = 1.0f;   
+    float m_terrainWorldSize = 512.0f;  
+    float m_terrainHeightScale = 300.0f; 
+    int   m_terrainGridRes = 129;
+
+    SceneObject CreateTerrainTileFromHeightmap(
+        const std::vector<float>& heightmap,
+        int heightmapWidth, int heightmapHeight,
+        int gridRes,            
+        float worldSize,      
+        float heightMin, float heightMax,
+        float heightScale);       
 };

@@ -30,10 +30,12 @@ D3D12App::D3D12App() {
 }
 
 D3D12App::~D3D12App() {
+    OutputDebugStringA("[App] destroying\n");
     Shutdown();
 }
 
 void D3D12App::Shutdown() {
+    OutputDebugStringA("[Shutdown] entering\n");
     WaitForGpu();
     if (m_fenceEvent) CloseHandle(m_fenceEvent);
 
@@ -306,6 +308,8 @@ bool D3D12App::Initialize(HWND hwnd) {
         // SRV heap заранее — до загрузки текстур
         CreateSRVHeap();
 
+        ThrowIfFailed(m_commandAllocators[0]->Reset());
+        ThrowIfFailed(m_commandList->Reset(m_commandAllocators[0].Get(), nullptr));
 
         {
             float globalMin = 1e9f;
@@ -320,32 +324,69 @@ bool D3D12App::Initialize(HWND hwnd) {
                     auto height = TerrainLoader::LoadHeightmap(path, w, h);
                     if (height.empty()) continue;
 
-                    float minH = 1e9f, maxH = -1e9f, sum = 0.0f;
                     for (float v : height) {
-                        minH = (v < minH) ? v : minH;
-                        maxH = (v > maxH) ? v : maxH;
-                        sum += v;
+                        if (v < globalMin) globalMin = v;
+                        if (v > globalMax) globalMax = v;
                     }
-
-                    if (minH < globalMin) globalMin = minH;
-                    if (maxH > globalMax) globalMax = maxH;
-
-                    char buf[256];
-                    sprintf_s(buf, "[Tile %d,%d] min=%.4f max=%.4f avg=%.4f\n",
-                        y, x, minH, maxH, sum / height.size());
-                    OutputDebugStringA(buf);
                 }
             }
+
+            m_terrainHeightMin = globalMin;
+            m_terrainHeightMax = globalMax;
 
             char buf[256];
             sprintf_s(buf, "[Terrain] GLOBAL: min=%.4f max=%.4f\n", globalMin, globalMax);
             OutputDebugStringA(buf);
         }
 
+        {
+            const int tilesX = 4;
+            const int tilesZ = 4;
+            const float tileSize = m_terrainWorldSize;  
 
-        // Один Reset на обе модели
-        ThrowIfFailed(m_commandAllocators[0]->Reset());
-        ThrowIfFailed(m_commandList->Reset(m_commandAllocators[0].Get(), nullptr));
+            for (int y = 0; y < tilesZ; ++y) {
+                for (int x = 0; x < tilesX; ++x) {
+
+                    char path[256];
+                    sprintf_s(path,
+                        "assets/volcano/Erosion2/Erosion2_Out_y%d_x%d.png", y, x);
+
+                    int w = 0, h = 0;
+                    auto height = TerrainLoader::LoadHeightmap(path, w, h);
+                    if (height.empty()) {
+                        char buf[256];
+                        sprintf_s(buf, "[Terrain] Skipping tile y%d x%d (empty)\n", y, x);
+                        OutputDebugStringA(buf);
+                        continue;
+                    }
+
+                    SceneObject tile = CreateTerrainTileFromHeightmap(
+                        height, w, h,
+                        m_terrainGridRes,
+                        m_terrainWorldSize,
+                        m_terrainHeightMin, m_terrainHeightMax,
+                        m_terrainHeightScale);
+
+                    XMFLOAT4X4 world;
+                    XMStoreFloat4x4(&world, XMMatrixTranslation(
+                        (float)x * tileSize, 0.0f, (float)y * tileSize));
+                    tile.world = world;
+
+                    CreateMeshBuffers(tile);
+                    m_objects.push_back(std::move(tile));
+
+                    char buf[256];
+                    sprintf_s(buf,
+                        "[Terrain] Tile y%d x%d: %zu verts, %zu idx at (%.0f, 0, %.0f)\n",
+                        y, x,
+                        m_objects.back().vertices.size(),
+                        m_objects.back().indices.size(),
+                        (float)x * tileSize, (float)y * tileSize);
+                    OutputDebugStringA(buf);
+                }
+            }
+        }
+
 
         {
             Texture defaultTex = TextureLoader::CreateDefaultTexture(
@@ -773,11 +814,11 @@ void D3D12App::OnMouseMove(int x, int y) {
 
 void D3D12App::OnKeyDown(WPARAM wParam) {
     switch (wParam) {
-    case 'W':
-        m_camera.Zoom(-0.5f);
+    case 'W': 
+        m_camera.ZoomScaled(0.9f);
         break;
-    case 'S':
-        m_camera.Zoom(0.5f);
+    case 'S': 
+        m_camera.ZoomScaled(1.1f); 
         break;
     case VK_UP:
         m_camera.Rotate(0, -10);
@@ -791,6 +832,10 @@ void D3D12App::OnKeyDown(WPARAM wParam) {
     case VK_RIGHT:
         m_camera.Rotate(10, 0);
         break;
+    case 'A': m_camera.MoveTarget(-50.0f, 0.0f, 0.0f); break; 
+    case 'D': m_camera.MoveTarget(50.0f, 0.0f, 0.0f); break;  
+    case 'Q': m_camera.MoveTarget(0.0f, 0.0f, -50.0f); break; 
+    case 'E': m_camera.MoveTarget(0.0f, 0.0f, 50.0f); break;  
 
     case 'O':  // Увеличить интенсивность
         m_lightIntensity += m_lightIntensityStep;
@@ -1075,4 +1120,118 @@ void D3D12App::CreateMeshBuffers(SceneObject& obj) {
     obj.ibv.BufferLocation = obj.indexBuffer->GetGPUVirtualAddress();
     obj.ibv.Format = DXGI_FORMAT_R32_UINT;
     obj.ibv.SizeInBytes = ibSize;
+}
+
+SceneObject D3D12App::CreateTerrainTileFromHeightmap(
+    const std::vector<float>& heightmap,
+    int heightmapWidth, int heightmapHeight,
+    int gridRes,
+    float worldSize,
+    float heightMin, float heightMax,
+    float heightScale)
+{
+    SceneObject tile;
+
+    const float invRange = 1.0f / std::max(1e-6f, heightMax - heightMin);
+
+    auto sampleHeight = [&](float u, float v) -> float {
+        float px = u * (heightmapWidth - 1);
+        float py = v * (heightmapHeight - 1);
+        int x0 = (int)px;
+        int y0 = (int)py;
+        int x1 = std::min(x0 + 1, heightmapWidth - 1);
+        int y1 = std::min(y0 + 1, heightmapHeight - 1);
+        float fx = px - x0;
+        float fy = py - y0;
+
+        auto at = [&](int x, int y) {
+            return heightmap[y * heightmapWidth + x];
+            };
+
+        float h00 = at(x0, y0);
+        float h10 = at(x1, y0);
+        float h01 = at(x0, y1);
+        float h11 = at(x1, y1);
+
+        float h0 = h00 * (1 - fx) + h10 * fx;
+        float h1 = h01 * (1 - fx) + h11 * fx;
+        return h0 * (1 - fy) + h1 * fy;
+        };
+
+    const float step = worldSize / (gridRes - 1);
+
+    for (int z = 0; z < gridRes; ++z) {
+        for (int x = 0; x < gridRes; ++x) {
+            float u = (float)x / (gridRes - 1);
+            float v = (float)z / (gridRes - 1);
+
+            float rawH = sampleHeight(u, v);
+            float h = (rawH - heightMin) * invRange; 
+            h = std::max(0.0f, std::min(1.0f, h));    
+
+            Vertex vtx;
+            vtx.position.x = u * worldSize - worldSize * 0.5f;
+            vtx.position.y = h * heightScale;
+            vtx.position.z = v * worldSize - worldSize * 0.5f;
+            vtx.normal = XMFLOAT3(0, 1, 0);  
+            vtx.texcoord = XMFLOAT2(u, v);
+            tile.vertices.push_back(vtx);
+        }
+    }
+
+
+    for (int z = 1; z < gridRes - 1; ++z) {
+        for (int x = 1; x < gridRes - 1; ++x) {
+            int idx = z * gridRes + x;
+            int left = z * gridRes + (x - 1);
+            int right = z * gridRes + (x + 1);
+            int up = (z - 1) * gridRes + x;
+            int down = (z + 1) * gridRes + x;
+
+            XMVECTOR pL = XMLoadFloat3(&tile.vertices[left].position);
+            XMVECTOR pR = XMLoadFloat3(&tile.vertices[right].position);
+            XMVECTOR pU = XMLoadFloat3(&tile.vertices[up].position);
+            XMVECTOR pD = XMLoadFloat3(&tile.vertices[down].position);
+
+            XMVECTOR dx = pR - pL;
+            XMVECTOR dz = pD - pU;
+            XMVECTOR n = XMVector3Normalize(XMVector3Cross(dz, dx));
+
+            XMStoreFloat3(&tile.vertices[idx].normal, n);
+        }
+    }
+
+
+    for (int z = 0; z < gridRes - 1; ++z) {
+        for (int x = 0; x < gridRes - 1; ++x) {
+            uint32_t a = z * gridRes + x;
+            uint32_t b = z * gridRes + (x + 1);
+            uint32_t c = (z + 1) * gridRes + x;
+            uint32_t d = (z + 1) * gridRes + (x + 1);
+
+
+            tile.indices.push_back(a);
+            tile.indices.push_back(c);
+            tile.indices.push_back(b);
+
+            tile.indices.push_back(b);
+            tile.indices.push_back(c);
+            tile.indices.push_back(d);
+        }
+    }
+
+    Material mat;
+    mat.name = "terrain";
+    mat.roughnessFactor = 0.8f;
+    mat.metallicFactor = 0.0f;
+    mat.aoFactor = 1.0f;
+    mat.albedoFactor = XMFLOAT3(0.5f, 0.5f, 0.5f);
+
+    tile.materials.push_back(mat);
+    tile.materialStartIndex.push_back(0);
+    tile.materialIndexCount.push_back((uint32_t)tile.indices.size());
+    tile.indexCount = (uint32_t)tile.indices.size();
+    tile.hasTextures = false;   
+
+    return tile;
 }

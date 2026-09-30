@@ -12,7 +12,7 @@ using Microsoft::WRL::ComPtr;
 
 RenderingSystem::RenderingSystem() : m_gbuffer(std::make_unique<GBuffer>()) {}
 
-RenderingSystem::~RenderingSystem() {}
+RenderingSystem::~RenderingSystem() { OutputDebugStringA("[RS] destroying\n");  }
 
 void RenderingSystem::Initialize(ID3D12Device* device, UINT width, UINT height) {
     m_width = width;
@@ -297,6 +297,7 @@ void RenderingSystem::CreateIBLResources(ID3D12Device* device,
         (unsigned)iblBase);
     OutputDebugStringA(buf);
 
+    // ---- SRV: brdf_lut (Texture2D) — слот iblBase+2 ----
     {
         D3D12_CPU_DESCRIPTOR_HANDLE handle =
             m_gbufferSrvHeap->GetCPUDescriptorHandleForHeapStart();
@@ -321,6 +322,7 @@ void RenderingSystem::Resize(UINT width, UINT height) {
     m_width = width;
     m_height = height;
     m_gbuffer->Release();
+    // Нужно сохранить device для Resize или передавать его параметром
 }
 
 void RenderingSystem::AddLight(const Light& light) {
@@ -335,12 +337,15 @@ void RenderingSystem::ClearLights() {
     for (UINT i = 0; i < kMaxProjectiles; ++i) m_projectiles[i].alive = false;
 }
 
+// RenderingSystem.cpp
 
 void RenderingSystem::CreateLightBuffers(ID3D12Device* device) {
     D3D12_RESOURCE_DESC cbDesc = {};
     cbDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
     cbDesc.Alignment = 0;
 
+    // ИСПРАВЛЕНИЕ: Используем размер структуры, которая соответствует шейдеру
+    // Убедитесь, что LightBufferGPU определена и её размер совпадает с cbuffer в шейдере
     cbDesc.Width = sizeof(LightBufferGPU);
 
     cbDesc.Height = 1;
@@ -359,6 +364,7 @@ void RenderingSystem::CreateLightBuffers(ID3D12Device* device) {
     heapProps.CreationNodeMask = 1;
     heapProps.VisibleNodeMask = 1;
 
+    // Создаем ресурс
     HRESULT hr = device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &cbDesc,
         D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_lightConstantBuffer));
 
@@ -366,6 +372,7 @@ void RenderingSystem::CreateLightBuffers(ID3D12Device* device) {
         throw std::runtime_error("Failed to create light constant buffer");
     }
 
+    // Маппим память
     D3D12_RANGE readRange = { 0, 0 };
     hr = m_lightConstantBuffer->Map(0, &readRange, &m_lightCBData);
     if (FAILED(hr)) {
@@ -756,12 +763,13 @@ float4 main(float4 position : SV_POSITION) : SV_TARGET {
     psoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
 
     psoDesc.SampleMask = UINT_MAX;
-    psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE; 
+    psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;  // Исправлено с TRIANGLESTRIP на TRIANGLE
     psoDesc.NumRenderTargets = 1;
     psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
     psoDesc.DSVFormat = DXGI_FORMAT_UNKNOWN;
     psoDesc.SampleDesc.Count = 1;
     psoDesc.SampleDesc.Quality = 0;
+    //psoDesc.NodeMask = 1;
     psoDesc.CachedPSO.CachedBlobSizeInBytes = 0;
     psoDesc.CachedPSO.pCachedBlob = nullptr;
     psoDesc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
@@ -790,6 +798,7 @@ void RenderingSystem::Render(ID3D12GraphicsCommandList* cmdList,
         return;
     }
 
+    // ==== Обновление light CB ====
     memset(m_lightCBData, 0, sizeof(LightBufferGPU));
     LightBufferGPU* lightData = reinterpret_cast<LightBufferGPU*>(m_lightCBData);
     lightData->lightCount = std::min((UINT)m_lights.size(), 16u);
@@ -807,10 +816,13 @@ void RenderingSystem::Render(ID3D12GraphicsCommandList* cmdList,
         objects[0].cameraPos.z,
         1.0f);
 
+    // ==== GEOMETRY PASS ====
     D3D12_CPU_DESCRIPTOR_HANDLE gbufferRTVs[GBuffer::GB_COUNT];
     for (int i = 0; i < GBuffer::GB_COUNT; ++i)
         gbufferRTVs[i] = m_gbuffer->GetRTV((GBuffer::GBufferType)i);
 
+    // КРИТИЧНО: явно устанавливаем heap моделей для geometry pass.
+    // Он должен совпадать с тем, что используется в SetGraphicsRootDescriptorTable(1, ...).
     {
         ID3D12DescriptorHeap* modelHeaps[] = { objects[0].modelSrvHeap };
         cmdList->SetDescriptorHeaps(_countof(modelHeaps), modelHeaps);
@@ -820,6 +832,7 @@ void RenderingSystem::Render(ID3D12GraphicsCommandList* cmdList,
     cmdList->SetPipelineState(geometryPSO);
     cmdList->OMSetRenderTargets(GBuffer::GB_COUNT, gbufferRTVs, FALSE, &dsvHandle);
 
+    // Viewport/scissor — обязательно для geometry pass.
     D3D12_VIEWPORT vp = { 0.0f, 0.0f, (float)m_width, (float)m_height, 0.0f, 1.0f };
     D3D12_RECT sc = { 0, 0, (LONG)m_width, (LONG)m_height };
     cmdList->RSSetViewports(1, &vp);
@@ -882,6 +895,8 @@ void RenderingSystem::Render(ID3D12GraphicsCommandList* cmdList,
         }
     }
 
+    // ==== LIGHTING PASS ====
+    // Барьер: GBuffer RENDER_TARGET → PIXEL_SHADER_RESOURCE
     D3D12_RESOURCE_BARRIER barriers[GBuffer::GB_COUNT];
     for (int i = 0; i < GBuffer::GB_COUNT; ++i) {
         barriers[i].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -897,16 +912,20 @@ void RenderingSystem::Render(ID3D12GraphicsCommandList* cmdList,
     cmdList->SetPipelineState(m_lightingPSO.Get());
     cmdList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
 
+    // ОДИН heap: m_gbufferSrvHeap. IBL лежит сразу после GBuffer.
     ID3D12DescriptorHeap* heaps[] = { m_gbufferSrvHeap.Get() };
     cmdList->SetDescriptorHeaps(_countof(heaps), heaps);
 
+    // GBuffer SRV — t0..t3
     D3D12_GPU_DESCRIPTOR_HANDLE gbufferGpuHandle =
         m_gbufferSrvHeap->GetGPUDescriptorHandleForHeapStart();
     cmdList->SetGraphicsRootDescriptorTable(0, gbufferGpuHandle);
 
+    // CBV света
     cmdList->SetGraphicsRootConstantBufferView(
         1, m_lightConstantBuffer->GetGPUVirtualAddress());
 
+    // IBL SRV — t4..t6 (offset = GB_COUNT дескрипторов от начала)
     if (m_iblReady) {
         D3D12_GPU_DESCRIPTOR_HANDLE iblGpuHandle;
         iblGpuHandle.ptr = gbufferGpuHandle.ptr +
@@ -924,8 +943,10 @@ void RenderingSystem::Render(ID3D12GraphicsCommandList* cmdList,
     cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
     cmdList->DrawInstanced(4, 1, 0, 0);
 
+    // Gizmos (если есть живые снаряды)
     RenderLightGizmos(cmdList, rtvHandle, objects[0].viewProj);
 
+    // Возвращаем GBuffer в RENDER_TARGET для следующего кадра
     for (int i = 0; i < GBuffer::GB_COUNT; ++i) {
         barriers[i].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         barriers[i].Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
@@ -954,6 +975,7 @@ void RenderingSystem::Update(float deltaTime) {
     RebuildLightsFromProjectiles();
 }
 
+// RenderingSystem.cpp
 void RenderingSystem::CreateLightVisPipeline(ID3D12Device* device) {
     static const char* vsCode = R"(
     cbuffer LightVisCB : register(b0) {
@@ -1031,6 +1053,7 @@ void RenderingSystem::CreateLightVisPipeline(ID3D12Device* device) {
         throw std::runtime_error("LightVis PS compile failed");
     }
 
+    // Root signature: CBV b0
     D3D12_ROOT_PARAMETER rp = {};
     rp.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     rp.Descriptor.ShaderRegister = 0;
@@ -1047,11 +1070,12 @@ void RenderingSystem::CreateLightVisPipeline(ID3D12Device* device) {
     device->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(),
         IID_PPV_ARGS(&m_lightVisRootSig));
 
+    // PSO: без depth, alpha blending (аддитивный)
     D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
     pso.pRootSignature = m_lightVisRootSig.Get();
     pso.VS = { vs->GetBufferPointer(), vs->GetBufferSize() };
     pso.PS = { ps->GetBufferPointer(), ps->GetBufferSize() };
-    pso.InputLayout = { nullptr, 0 }; 
+    pso.InputLayout = { nullptr, 0 };  // процедурные вершины
     pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     pso.NumRenderTargets = 1;
     pso.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -1063,6 +1087,7 @@ void RenderingSystem::CreateLightVisPipeline(ID3D12Device* device) {
     pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
     pso.SampleMask = UINT_MAX;
 
+    // Аддитивный блендинг: dst = src + dst
     auto& rt = pso.BlendState.RenderTarget[0];
     rt.BlendEnable = TRUE;
     rt.SrcBlend = D3D12_BLEND_ONE;
@@ -1076,6 +1101,7 @@ void RenderingSystem::CreateLightVisPipeline(ID3D12Device* device) {
     hr = device->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_lightVisPSO));
     if (FAILED(hr)) throw std::runtime_error("LightVis PSO create failed");
 
+    // Constant buffer для визуализации
     D3D12_HEAP_PROPERTIES hp = {}; hp.Type = D3D12_HEAP_TYPE_UPLOAD;
     D3D12_RESOURCE_DESC rd = {};
     rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
@@ -1094,6 +1120,7 @@ void RenderingSystem::CreateLightVisPipeline(ID3D12Device* device) {
 void RenderingSystem::RenderLightGizmos(ID3D12GraphicsCommandList* cmdList,
     D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle,
     const XMFLOAT4X4& viewProj) {
+    // Проверяем, есть ли вообще что рисовать
     bool any = false;
     for (UINT i = 0; i < kMaxProjectiles; ++i) {
         if (m_projectiles[i].alive) { any = true; break; }
@@ -1164,11 +1191,13 @@ void RenderingSystem::RebuildLightsFromProjectiles() {
     m_lights.clear();
     m_originalIntensities.clear();
 
+    // Статичные света (если есть)
     for (const Light& l : m_staticLights) {
         m_lights.push_back(l);
         m_originalIntensities.push_back(l.intensity);
     }
 
+    // Снаряды
     for (UINT i = 0; i < kMaxProjectiles; ++i) {
         const Projectile& p = m_projectiles[i];
         if (!p.alive) continue;
@@ -1189,6 +1218,7 @@ void RenderingSystem::RebuildLightsFromProjectiles() {
         m_originalIntensities.push_back(light.intensity);
     }
 
+    // Жёсткий лимит под шейдер
     if (m_lights.size() > 16) {
         m_lights.resize(16);
         m_originalIntensities.resize(16);
