@@ -36,6 +36,13 @@ D3D12App::~D3D12App() {
 
 void D3D12App::Shutdown() {
     OutputDebugStringA("[Shutdown] entering\n");
+
+    if (m_quadRoot) {
+        DestroyQuadTree(m_quadRoot);
+        m_quadRoot = nullptr;
+        m_terrainMeshCount = 0;
+    }
+
     WaitForGpu();
     if (m_fenceEvent) CloseHandle(m_fenceEvent);
 
@@ -305,26 +312,127 @@ bool D3D12App::Initialize(HWND hwnd) {
         m_renderingSystem = std::make_unique<RenderingSystem>();
         m_renderingSystem->Initialize(m_device.Get(), kWidth, kHeight);
 
-        // SRV heap заранее — до загрузки текстур
         CreateSRVHeap();
 
         ThrowIfFailed(m_commandAllocators[0]->Reset());
         ThrowIfFailed(m_commandList->Reset(m_commandAllocators[0].Get(), nullptr));
-
         {
             Texture whiteTex = TextureLoader::CreateSolidTexture(
                 m_device.Get(), m_commandList.Get(), 255, 255, 255, 255);
             m_defaultWhiteTexIndex = (int)m_textures.size();
             m_textures.push_back(std::move(whiteTex));
+            int whiteResIdx = m_defaultWhiteTexIndex;
 
             Texture blackTex = TextureLoader::CreateSolidTexture(
                 m_device.Get(), m_commandList.Get(), 0, 0, 0, 255);
             m_defaultBlackTexIndex = (int)m_textures.size();
             m_textures.push_back(std::move(blackTex));
+            int blackResIdx = m_defaultBlackTexIndex;
+
+            D3D12_CPU_DESCRIPTOR_HANDLE heapStart =
+                m_srvHeap->GetCPUDescriptorHandleForHeapStart();
+
+            const int resIndices[5] = {
+                whiteResIdx, whiteResIdx, blackResIdx, whiteResIdx, whiteResIdx
+            };
+
+            for (int i = 0; i < 5; ++i) {
+                D3D12_CPU_DESCRIPTOR_HANDLE h = heapStart;
+                h.ptr += (UINT64)(m_srvHeapUsed + i) * m_srvDescriptorSize;
+
+                D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+                srvDesc.Format = m_textures[resIndices[i]].format;
+                srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+                srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+                srvDesc.Texture2D.MipLevels = 1;
+
+                m_device->CreateShaderResourceView(
+                    m_textures[resIndices[i]].resource.Get(), &srvDesc, h);
+            }
+
+            m_defaultBlockSrv = (int)m_srvHeapUsed;  
+            m_defaultWhiteSrv = m_defaultBlockSrv + 0;  
+            m_defaultBlackSrv = m_defaultBlockSrv + 2; 
+
+            m_srvHeapUsed += 5;
 
             char buf[128];
-            sprintf_s(buf, "[SRV] Default white tex idx=%d, black tex idx=%d\n",
-                m_defaultWhiteTexIndex, m_defaultBlackTexIndex);
+            sprintf_s(buf, "[SRV] Default material block: base=%d (0=W,1=W,2=B,3=W,4=W)\n",
+                m_defaultBlockSrv);
+            OutputDebugStringA(buf);
+        }
+
+        {
+            const int tilesX = m_terrainConfig.tilesX;
+            const int tilesZ = m_terrainConfig.tilesZ;
+            const int tileSizePx = 512;
+
+            Texture atlas = TextureLoader::CreateTextureAtlas(
+                m_device.Get(), m_commandList.Get(),
+                m_terrainConfig.albedoPattern,
+                tilesX, tilesZ, tileSizePx);
+
+            m_textures.push_back(std::move(atlas));
+
+            m_terrainAlbedoSrv = RegisterTexture(
+                m_device.Get(), m_srvHeap.Get(),
+                m_srvHeapUsed, m_srvHeapCapacity,
+                m_srvDescriptorSize,
+                m_textures.back());
+
+            char buf[128];
+            sprintf_s(buf, "[SRV] Terrain albedo atlas srv=%d\n", m_terrainAlbedoSrv);
+            OutputDebugStringA(buf);
+        }
+
+        {
+            D3D12_CPU_DESCRIPTOR_HANDLE heapStart =
+                m_srvHeap->GetCPUDescriptorHandleForHeapStart();
+
+            const int resIndices[5] = {
+                -1,                       // [0] = atlas 
+                m_defaultWhiteTexIndex,   // [1] = white roughness
+                m_defaultBlackTexIndex,   // [2] = black metallic
+                m_defaultWhiteTexIndex,   // [3] = white ao
+                m_defaultWhiteTexIndex,   // [4] = white normal
+            };
+
+            const UINT blockBase = m_srvHeapUsed;
+
+            {
+                D3D12_CPU_DESCRIPTOR_HANDLE h = heapStart;
+                h.ptr += (UINT64)(blockBase + 0) * m_srvDescriptorSize;
+
+                D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+                srvDesc.Format = m_textures.back().format;   
+                srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+                srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+                srvDesc.Texture2D.MipLevels = 1;
+
+                m_device->CreateShaderResourceView(
+                    m_textures.back().resource.Get(), &srvDesc, h);
+            }
+
+            for (int i = 1; i < 5; ++i) {
+                D3D12_CPU_DESCRIPTOR_HANDLE h = heapStart;
+                h.ptr += (UINT64)(blockBase + i) * m_srvDescriptorSize;
+
+                D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+                srvDesc.Format = m_textures[resIndices[i]].format;
+                srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+                srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+                srvDesc.Texture2D.MipLevels = 1;
+
+                m_device->CreateShaderResourceView(
+                    m_textures[resIndices[i]].resource.Get(), &srvDesc, h);
+            }
+
+            m_terrainBlockSrv = (int)blockBase;
+            m_srvHeapUsed += 5;
+
+            char buf[128];
+            sprintf_s(buf, "[SRV] Terrain material block: base=%d (0=atlas,1=W,2=B,3=W,4=W)\n",
+                m_terrainBlockSrv);
             OutputDebugStringA(buf);
         }
 
@@ -334,87 +442,37 @@ bool D3D12App::Initialize(HWND hwnd) {
         }
 
         {
-            const int tilesX = m_terrainConfig.tilesX;
-            const int tilesZ = m_terrainConfig.tilesZ;
-            const float tileSize = m_terrainConfig.worldSize;
+            if (m_terrainConfig.tilesX != m_terrainConfig.tilesZ) {
+                OutputDebugStringA("[QuadTree] Only square worlds supported for now\n");
+                return false;
+            }
 
-            for (int y = 0; y < tilesZ; ++y) {
-                for (int x = 0; x < tilesX; ++x) {
+            m_quadRoot = BuildQuadTree(
+                0, 0,
+                m_terrainConfig.tilesX,
+                0);
 
-                    // Берём heightmap из кэша, а не грузим заново
-                    const auto& height = m_terrainHeightmaps[y][x];
-                    if (height.empty()) {
-                        char buf[256];
-                        sprintf_s(buf, "[Terrain] Skipping tile y%d x%d (empty)\n", y, x);
-                        OutputDebugStringA(buf);
-                        continue;
-                    }
+            char buf[256];
+            sprintf_s(buf, "[QuadTree] Built %zu mesh nodes\n", m_objects.size());
+            OutputDebugStringA(buf);
 
-                    const int hw = 512;
-                    const int hh = 512;
+            m_terrainMeshCount = (UINT)m_objects.size();
 
-                    SceneObject tile = CreateTerrainTileFromHeightmap(
-                        height, hw, hh,
-                        m_terrainConfig.gridRes,
-                        m_terrainConfig.worldSize,
-                        m_terrainHeightMin, m_terrainHeightMax,
-                        m_terrainConfig.heightScale);
+            sprintf_s(buf, "[QuadTree] terrain mesh count = %u\n", m_terrainMeshCount);
+            OutputDebugStringA(buf);
 
-                    XMFLOAT4X4 world;
-                    XMStoreFloat4x4(&world, XMMatrixTranslation(
-                        (float)x * tileSize, 0.0f, (float)y * tileSize));
-                    tile.world = world;
-
-                    char pAlbedo[256], pNormal[256];
-                    m_terrainConfig.MakeAlbedoPath(y, x, pAlbedo, sizeof(pAlbedo));
-                    m_terrainConfig.MakeNormalPath(y, x, pNormal, sizeof(pNormal));
-
-                    MaterialPaths paths;
-                    paths.albedo = pAlbedo;
-                    paths.normal = pNormal;
-                    paths.roughness = "";
-                    paths.metallic = "";
-                    paths.ao = "";
-
-                    auto& mat = tile.materials[0];
-                    mat.albedoTexturePath = paths.albedo;
-                    mat.normalTexturePath = paths.normal;
-                    mat.roughnessTexturePath = paths.roughness;
-                    mat.metallicTexturePath = paths.metallic;
-                    mat.aoTexturePath = paths.ao;
-
-                    int a, r, m, o, n;
-                    if (LoadMaterialBlock(paths, a, r, m, o, n) < 0) {
-                        OutputDebugStringA("[Terrain] LoadMaterialBlock failed\n");
-                        continue;
-                    }
-                    mat.albedoSrv = a;
-                    mat.roughnessSrv = r;
-                    mat.metallicSrv = m;
-                    mat.aoSrv = o;
-                    mat.normalSrv = n;
-                    mat.textureIndex = a;
-
-                    tile.hasTextures = true;
-
-                    CreateMeshBuffers(tile);
-                    m_objects.push_back(std::move(tile));
-
-                    char buf[256];
-                    sprintf_s(buf, "[Terrain] Tile y%d x%d loaded\n", y, x);
-                    OutputDebugStringA(buf);
-                }
+            for (auto& obj : m_objects) {
+                if (!obj.vertices.empty()) CreateMeshBuffers(obj);
             }
         }
 
-        // Cerberus — слева
         {
             MaterialPaths paths;
             paths.albedo = "assets/Cerberus_by_Andrew_Maximov/Textures/Cerberus_A.jpg";
             paths.normal = "assets/Cerberus_by_Andrew_Maximov/Textures/Cerberus_N.jpg";
             paths.roughness = "assets/Cerberus_by_Andrew_Maximov/Textures/Cerberus_R.jpg";
             paths.metallic = "assets/Cerberus_by_Andrew_Maximov/Textures/Cerberus_M.jpg";
-            paths.ao = "";  // AO-карты у Cerberus нет
+            paths.ao = ""; 
 
             SceneObject cerberus;
             XMFLOAT4X4 world;
@@ -429,14 +487,13 @@ bool D3D12App::Initialize(HWND hwnd) {
             }
         }
 
-        // Wood root — справа
         {
             MaterialPaths paths;
             paths.albedo = "assets/wood_root/Aset_wood_root_M_rkswd_2K_Albedo.jpg";
             paths.normal = "assets/wood_root/Aset_wood_root_M_rkswd_2K_Normal_LOD0.jpg";
             paths.roughness = "assets/wood_root/Aset_wood_root_M_rkswd_2K_Roughness.jpg";
-            paths.metallic = "";  // metallic-карты у wood_root нет 
-            paths.ao = "";  // AO-карты у wood_root нет
+            paths.metallic = "";  
+            paths.ao = "";  
 
             SceneObject woodRoot;
             XMFLOAT4X4 world;
@@ -458,7 +515,6 @@ bool D3D12App::Initialize(HWND hwnd) {
 
         m_renderingSystem->CreateIBLResources(m_device.Get(), m_commandList.Get());
 
-        // Закрываем список и ждём завершения загрузки
         ThrowIfFailed(m_commandList->Close());
         ID3D12CommandList* lists[] = { m_commandList.Get() };
         m_commandQueue->ExecuteCommandLists(1, lists);
@@ -487,9 +543,6 @@ bool D3D12App::Initialize(HWND hwnd) {
 }
 
 
-// ==============================================
-// Рендеринг
-// ==============================================
 
 void D3D12App::UpdateConstantBuffer(uint32_t frameIndex) {
     m_textureAnimTime += 0.016f;
@@ -522,7 +575,7 @@ void D3D12App::UpdateConstantBuffer(uint32_t frameIndex) {
             mat.roughnessFactor,
             mat.metallicFactor,
             mat.aoFactor,
-            obj.hasTextures ? 1.0f : 0.0f    // ← .w = useMaterialTextures
+            obj.hasTextures ? 1.0f : 0.0f   
         );
    
 
@@ -533,7 +586,6 @@ void D3D12App::UpdateConstantBuffer(uint32_t frameIndex) {
 void D3D12App::CreateGeometryPassRootSignature() {
     D3D12_ROOT_PARAMETER rootParams[2];
 
-    // CBV для константного буфера сцены
     rootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     rootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     rootParams[0].Descriptor.ShaderRegister = 0;
@@ -698,11 +750,53 @@ void D3D12App::RenderFrame() {
         renderData.reserve(m_objects.size());
 
         UINT culledCount = 0;
+        UINT terrainVisible = 0;
 
-        for (UINT o = 0; o < (UINT)m_objects.size() && o < kMaxObjects; ++o) {
+        auto EmitObject = [&](UINT o) {
+            auto& obj = m_objects[o];
+            RenderingSystem::RenderData rd = {};
+            rd.vertexBuffer = obj.vertexBuffer.Get();
+            rd.indexBuffer = obj.indexBuffer.Get();
+            rd.indexCount = obj.indexCount;
+            rd.cbvAddress = m_constantBuffer[m_frameIndex][o]->GetGPUVirtualAddress();
+            rd.modelSrvHeap = m_srvHeap.Get();
+            rd.srvDescriptorSize = m_srvDescriptorSize;
+            rd.materialStartIndex = obj.materialStartIndex.data();
+            rd.materialIndexCount = obj.materialIndexCount.data();
+            rd.numMaterials = (UINT)obj.materials.size();
+            rd.materials = obj.materials.data();
+            rd.viewProj = viewProjF;
+            rd.cameraPos = cameraPos;
+            renderData.push_back(rd);
+            };
+
+        {
+            std::vector<int> visibleNodes;
+            visibleNodes.reserve(32);
+
+            UINT terrainCulled = 0;
+            TraverseQuadTree(m_quadRoot, m_frustum, cameraPos,
+                visibleNodes, terrainCulled, terrainVisible);
+
+            static UINT s_lastVisible = UINT_MAX;
+            if (terrainVisible != s_lastVisible) {
+                s_lastVisible = terrainVisible;
+                char buf[128];
+                sprintf_s(buf, "[LOD] terrain nodes visible: %u, culled: %u\n",
+                    terrainVisible, terrainCulled);
+                OutputDebugStringA(buf);
+            }
+
+            for (int idx : visibleNodes) {
+                EmitObject((UINT)idx);
+            }
+
+            culledCount += terrainCulled;
+        }
+
+        for (UINT o = m_terrainMeshCount; o < (UINT)m_objects.size() && o < kMaxObjects; ++o) {
             auto& obj = m_objects[o];
 
-            // ---- FRUSTUM CULLING ----
             XMMATRIX world = XMLoadFloat4x4(&obj.world);
 
             XMFLOAT3 lmin = obj.bounds.min;
@@ -728,21 +822,10 @@ void D3D12App::RenderFrame() {
                 continue;
             }
 
-            RenderingSystem::RenderData rd = {};
-            rd.vertexBuffer = obj.vertexBuffer.Get();
-            rd.indexBuffer = obj.indexBuffer.Get();
-            rd.indexCount = obj.indexCount;
-            rd.cbvAddress = m_constantBuffer[m_frameIndex][o]->GetGPUVirtualAddress();
-            rd.modelSrvHeap = m_srvHeap.Get();
-            rd.srvDescriptorSize = m_srvDescriptorSize;
-            rd.materialStartIndex = obj.materialStartIndex.data();
-            rd.materialIndexCount = obj.materialIndexCount.data();
-            rd.numMaterials = (UINT)obj.materials.size();
-            rd.materials = obj.materials.data();
-            rd.viewProj = viewProjF;
-            rd.cameraPos = cameraPos;
-            renderData.push_back(rd);
+            EmitObject(o);
         }
+
+
 
 
         static LARGE_INTEGER freq = {};
@@ -755,7 +838,7 @@ void D3D12App::RenderFrame() {
         QueryPerformanceCounter(&now);
         float deltaTime = float(now.QuadPart - last.QuadPart) / float(freq.QuadPart);
         last = now;
-        // Ограничиваем dt, чтобы при паузах/отладке свет не "прыгал"
+
         if (deltaTime > 0.1f) deltaTime = 0.1f;
 
         m_shootCooldown = std::max(0.0f, m_shootCooldown - deltaTime);
@@ -770,8 +853,11 @@ void D3D12App::RenderFrame() {
             s_smoothedDt = s_smoothedDt * 0.95f + deltaTime * 0.05f;
             float fps = 1.0f / std::max(0.0001f, s_smoothedDt);
             sprintf_s(title,
-                "D3D12 Sponza - visible: %zu / %zu   (culled: %u)   FPS: %.1f",
-                renderData.size(), m_objects.size(), culledCount, fps);
+                "Terrain LOD - total: %u   terrain nodes visible: %u   culled: %u   FPS: %.1f",
+                m_terrainMeshCount + 2, 
+                terrainVisible,
+                culledCount,
+                fps);
             SetWindowTextA(m_hwnd, title);
         }
 
@@ -1222,6 +1308,157 @@ SceneObject D3D12App::CreateTerrainTileFromHeightmap(
     return tile;
 }
 
+float D3D12App::SampleHeightWorld(float wx, float wz) const {
+    const float tileWorldSize = m_terrainConfig.worldSize;
+    const int   tilesX = m_terrainConfig.tilesX;
+    const int   tilesZ = m_terrainConfig.tilesZ;
+
+    float fx = (wx + tilesX * tileWorldSize * 0.5f) / tileWorldSize;
+    float fz = (wz + tilesZ * tileWorldSize * 0.5f) / tileWorldSize;
+
+    int tileX = (int)floorf(fx);
+    int tileZ = (int)floorf(fz);
+
+    tileX = std::max(0, std::min(tilesX - 1, tileX));
+    tileZ = std::max(0, std::min(tilesZ - 1, tileZ));
+
+    const auto& tile = m_terrainHeightmaps[tileZ][tileX];
+    if (tile.heights.empty()) return 0.0f;
+
+    float u = fx - (float)tileX;
+    float v = fz - (float)tileZ;
+
+    float px = u * (tile.width - 1);
+    float py = v * (tile.height - 1);
+
+    int x0 = (int)px;
+    int y0 = (int)py;
+    int x1 = std::min(x0 + 1, tile.width - 1);
+    int y1 = std::min(y0 + 1, tile.height - 1);
+    float dx = px - x0;
+    float dy = py - y0;
+
+    auto at = [&](int x, int y) {
+        return tile.heights[y * tile.width + x];
+        };
+
+    float h00 = at(x0, y0);
+    float h10 = at(x1, y0);
+    float h01 = at(x0, y1);
+    float h11 = at(x1, y1);
+
+    float h0 = h00 * (1 - dx) + h10 * dx;
+    float h1 = h01 * (1 - dx) + h11 * dx;
+    float rawH = h0 * (1 - dy) + h1 * dy;
+
+    const float invRange = 1.0f / std::max(1e-6f, m_terrainHeightMax - m_terrainHeightMin);
+    float h = (rawH - m_terrainHeightMin) * invRange;
+    h = std::max(0.0f, std::min(1.0f, h));
+
+    return h * m_terrainConfig.heightScale;
+}
+
+SceneObject D3D12App::CreateTerrainMesh(
+    int tilesStartX, int tilesStartY,
+    int tilesPerSide,
+    int gridRes,
+    float nodeWorldSize,
+    float worldOriginX, float worldOriginZ)
+{
+    SceneObject node;
+
+    const float half = nodeWorldSize * 0.5f;
+    const float step = nodeWorldSize / (gridRes - 1);
+
+
+    const float centerWorldX = worldOriginX + half;
+    const float centerWorldZ = worldOriginZ + half;
+
+
+    for (int z = 0; z < gridRes; ++z) {
+        for (int x = 0; x < gridRes; ++x) {
+
+            float localX = -half + x * step;
+            float localZ = -half + z * step;
+
+
+            float wx = centerWorldX + localX;
+            float wz = centerWorldZ + localZ;
+
+            float wy = SampleHeightWorld(wx, wz);
+
+            Vertex vtx;
+            vtx.position = XMFLOAT3(localX, wy, localZ);
+            vtx.normal = XMFLOAT3(0, 1, 0);
+            const float tilesX = (float)m_terrainConfig.tilesX;
+            const float tilesZ = (float)m_terrainConfig.tilesZ;
+
+            float localU = (float)x / (gridRes - 1);
+            float localV = (float)z / (gridRes - 1);
+
+            float uvU = ((float)tilesStartX + localU * tilesPerSide) / tilesX;
+            float uvV = ((float)tilesStartY + localV * tilesPerSide) / tilesZ;
+
+            vtx.texcoord = XMFLOAT2(uvU, uvV);
+            node.vertices.push_back(vtx);
+        }
+    }
+
+    for (int z = 1; z < gridRes - 1; ++z) {
+        for (int x = 1; x < gridRes - 1; ++x) {
+            int idx = z * gridRes + x;
+            int left = z * gridRes + (x - 1);
+            int right = z * gridRes + (x + 1);
+            int up = (z - 1) * gridRes + x;
+            int down = (z + 1) * gridRes + x;
+
+            XMVECTOR pL = XMLoadFloat3(&node.vertices[left].position);
+            XMVECTOR pR = XMLoadFloat3(&node.vertices[right].position);
+            XMVECTOR pU = XMLoadFloat3(&node.vertices[up].position);
+            XMVECTOR pD = XMLoadFloat3(&node.vertices[down].position);
+
+            XMVECTOR dx = pR - pL;
+            XMVECTOR dz = pD - pU;
+            XMVECTOR n = XMVector3Normalize(XMVector3Cross(dz, dx));
+
+            XMStoreFloat3(&node.vertices[idx].normal, n);
+        }
+    }
+
+    for (int z = 0; z < gridRes - 1; ++z) {
+        for (int x = 0; x < gridRes - 1; ++x) {
+            uint32_t a = z * gridRes + x;
+            uint32_t b = z * gridRes + (x + 1);
+            uint32_t c = (z + 1) * gridRes + x;
+            uint32_t d = (z + 1) * gridRes + (x + 1);
+
+            node.indices.push_back(a);
+            node.indices.push_back(c);
+            node.indices.push_back(b);
+
+            node.indices.push_back(b);
+            node.indices.push_back(c);
+            node.indices.push_back(d);
+        }
+    }
+
+    Material mat;
+    mat.name = "terrain";
+    mat.roughnessFactor = 0.8f;
+    mat.metallicFactor = 0.0f;
+    mat.aoFactor = 1.0f;
+    mat.albedoFactor = XMFLOAT3(0.5f, 0.5f, 0.5f);
+
+    node.materials.push_back(mat);
+    node.materialStartIndex.push_back(0);
+    node.materialIndexCount.push_back((uint32_t)node.indices.size());
+    node.indexCount = (uint32_t)node.indices.size();
+    node.hasTextures = false;
+
+    XMStoreFloat4x4(&node.world, XMMatrixIdentity());
+
+    return node;
+}
 
 int D3D12App::LoadMaterialBlock(const MaterialPaths& paths,
     int& outAlbedo, int& outRoughness,
@@ -1237,7 +1474,6 @@ int D3D12App::LoadMaterialBlock(const MaterialPaths& paths,
         return attrs != INVALID_FILE_ATTRIBUTES;
         };
 
-    // Загружаем только те текстуры, что реально есть
     int resIdx[5] = { -1, -1, -1, -1, -1 };
     const std::string* paths5[5] = {
         &paths.albedo, &paths.roughness, &paths.metallic, &paths.ao, &paths.normal
@@ -1252,7 +1488,6 @@ int D3D12App::LoadMaterialBlock(const MaterialPaths& paths,
         }
     }
 
-    // albedo обязателен
     if (resIdx[0] < 0) {
         OutputDebugStringA("[Mat] albedo missing\n");
         return -1;
@@ -1281,12 +1516,6 @@ int D3D12App::LoadMaterialBlock(const MaterialPaths& paths,
         srvDesc.Texture2D.MipLevels = 1;
 
         m_device->CreateShaderResourceView(m_textures[texIdx].resource.Get(), &srvDesc, h);
-
-        char buf[256];
-        sprintf_s(buf, "  [Mat] slot %d (srv %u) = tex %d%s\n",
-            i, m_srvHeapUsed + i, texIdx,
-            (resIdx[i] < 0) ? " [fallback]" : "");
-        OutputDebugStringA(buf);
     }
 
     outAlbedo = base + 0;
@@ -1340,7 +1569,10 @@ bool D3D12App::LoadAllHeightmaps() {
                 if (v > globalMax) globalMax = v;
             }
 
-            m_terrainHeightmaps[y][x] = std::move(height);
+            auto& tile = m_terrainHeightmaps[y][x];
+            tile.heights = std::move(height);
+            tile.width = w;
+            tile.height = h;
             loadedCount++;
         }
     }
@@ -1359,4 +1591,140 @@ bool D3D12App::LoadAllHeightmaps() {
     OutputDebugStringA(buf);
 
     return true;
+}
+
+QuadNode* D3D12App::BuildQuadTree(
+    int tilesStartX, int tilesStartY, int tilesPerSide, int level)
+{
+    QuadNode* node = new QuadNode();
+    node->level = level;
+    node->tilesStartX = tilesStartX;
+    node->tilesStartY = tilesStartY;
+    node->tilesPerSide = tilesPerSide;
+
+    const float tileWorldSize = m_terrainConfig.worldSize;
+    const float worldTotalX = m_terrainConfig.tilesX * tileWorldSize;
+    const float worldTotalZ = m_terrainConfig.tilesZ * tileWorldSize;
+
+    const float minX = -worldTotalX * 0.5f + tilesStartX * tileWorldSize;
+    const float minZ = -worldTotalZ * 0.5f + tilesStartY * tileWorldSize;
+    const float nodeWorldSize = tilesPerSide * tileWorldSize;
+    const float centerWorldX = minX + nodeWorldSize * 0.5f;
+    const float centerWorldZ = minZ + nodeWorldSize * 0.5f;
+
+    SceneObject mesh = CreateTerrainMesh(
+        tilesStartX, tilesStartY,
+        tilesPerSide,
+        m_terrainConfig.gridRes,
+        nodeWorldSize,
+        minX, minZ);
+
+    auto& mat = mesh.materials[0];
+    mat.albedoSrv = m_terrainBlockSrv + 0;
+    mat.roughnessSrv = m_terrainBlockSrv + 1;
+    mat.metallicSrv = m_terrainBlockSrv + 2;
+    mat.aoSrv = m_terrainBlockSrv + 3;
+    mat.normalSrv = m_terrainBlockSrv + 4;
+    mat.textureIndex = m_terrainBlockSrv;
+    mesh.hasTextures = true;
+
+    XMStoreFloat4x4(&mesh.world,
+        XMMatrixTranslation(centerWorldX, 0.0f, centerWorldZ));
+
+    node->meshIndex = (int)m_objects.size();
+    m_objects.push_back(std::move(mesh));
+
+    node->center = XMFLOAT3(centerWorldX, 0.0f, centerWorldZ);
+
+    const float halfXZ = nodeWorldSize * 0.5f;
+    const float halfY = m_terrainConfig.heightScale * 0.5f;
+    node->radius = sqrtf(halfXZ * halfXZ + halfXZ * halfXZ + halfY * halfY);
+    node->center.y = halfY; 
+
+    if (tilesPerSide <= 1 || level >= m_terrainConfig.maxLevel) {
+        return node;
+    }
+
+    int half = tilesPerSide / 2;
+    if (half < 1) return node;
+
+    node->children[0] = BuildQuadTree(tilesStartX, tilesStartY, half, level + 1);
+    node->children[1] = BuildQuadTree(tilesStartX + half, tilesStartY, half, level + 1);
+    node->children[2] = BuildQuadTree(tilesStartX, tilesStartY + half, half, level + 1);
+    node->children[3] = BuildQuadTree(tilesStartX + half, tilesStartY + half, half, level + 1);
+
+    return node;
+}
+
+void D3D12App::DestroyQuadTree(QuadNode* node) {
+    if (!node) return;
+    for (auto* c : node->children) DestroyQuadTree(c);
+    delete node;
+}
+
+void D3D12App::CollectVisibleNodes(QuadNode* node, std::vector<int>& outMeshIndices) {
+    if (!node) return;
+
+    if (node->IsLeaf()) {
+        if (node->meshIndex >= 0) outMeshIndices.push_back(node->meshIndex);
+        return;
+    }
+
+    for (auto* c : node->children) CollectVisibleNodes(c, outMeshIndices);
+}
+
+void D3D12App::TraverseQuadTree(
+    QuadNode* node,
+    const Frustum& frustum,
+    const XMFLOAT3& cameraPos,
+    std::vector<int>& outMeshIndices,
+    UINT& outCulledCount,
+    UINT& outVisibleCount)
+{
+    if (!node) return;
+
+
+    if (!frustum.Intersects(node->bounds)) {
+        outCulledCount++;
+        return;
+    }
+
+    if (node->IsLeaf()) {
+        if (node->meshIndex >= 0) {
+            outMeshIndices.push_back(node->meshIndex);
+            outVisibleCount++;
+        }
+        return;
+    }
+
+    const float dx = cameraPos.x - node->center.x;
+    const float dy = cameraPos.y - node->center.y;
+    const float dz = cameraPos.z - node->center.z;
+    const float dist = sqrtf(dx * dx + dy * dy + dz * dz);
+
+    const float splitDist = node->radius * m_terrainConfig.splitFactor;
+    const float mergeDist = node->radius * m_terrainConfig.mergeFactor;
+
+    bool shouldSplit;
+    if (node->currentlySplit) {
+        shouldSplit = (dist < mergeDist);
+    }
+    else {
+        shouldSplit = (dist < splitDist);
+    }
+
+    if (shouldSplit) {
+        node->currentlySplit = true;
+        for (auto* c : node->children) {
+            TraverseQuadTree(c, frustum, cameraPos,
+                outMeshIndices, outCulledCount, outVisibleCount);
+        }
+    }
+    else {
+        node->currentlySplit = false;
+        if (node->meshIndex >= 0) {
+            outMeshIndices.push_back(node->meshIndex);
+            outVisibleCount++;
+        }
+    }
 }

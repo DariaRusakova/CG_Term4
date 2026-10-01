@@ -21,4 +21,11 @@ public:
         ID3D12Device* device,
         ID3D12GraphicsCommandList* commandList,
         uint8_t r, uint8_t g, uint8_t b, uint8_t a);
+
+    static Texture CreateTextureAtlas(
+        ID3D12Device* device,
+        ID3D12GraphicsCommandList* commandList,
+        const std::string& pattern,
+        int tilesX, int tilesZ,
+        int tileSizePx);
 };

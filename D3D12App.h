@@ -15,6 +15,8 @@
 #include "Terrain/AABB.h"
 #include "Terrain/Frustum.h"
 #include "Terrain/TerrainConfig.h"
+#include "Terrain/QuadNode.h"
+
 
 struct alignas(256) SceneConstantBuffer {
     DirectX::XMFLOAT4X4 worldViewProj;
@@ -64,6 +66,11 @@ struct MaterialPaths {
     std::string ao;
 };
 
+struct TerrainTileData {
+    std::vector<float> heights;
+    int width = 0;
+    int height = 0;
+};
 
 class D3D12App {
 public:
@@ -155,7 +162,7 @@ private:
     int m_defaultBlackTexIndex = -1;  
 
     // Сцена
-    std::vector<SceneObject> m_objects;
+    std::vector<SceneObject> m_objects; 
 
     Camera m_camera;
 
@@ -171,7 +178,7 @@ private:
 
     TerrainConfig m_terrainConfig;
 
-    std::vector<std::vector<std::vector<float>>> m_terrainHeightmaps;
+    std::vector<std::vector<TerrainTileData>> m_terrainHeightmaps;
     float m_terrainHeightMin = 0.0f;
     float m_terrainHeightMax = 1.0f;
     bool LoadAllHeightmaps();
@@ -190,4 +197,36 @@ private:
     void UpdateObjectBounds(SceneObject& obj);
     Frustum m_frustum;
     HWND m_hwnd = nullptr;
+
+    float SampleHeightWorld(float wx, float wz) const;
+
+    SceneObject CreateTerrainMesh(
+        int tilesStartX, int tilesStartY,
+        int tilesPerSide,
+        int gridRes,
+        float nodeWorldSize,
+        float worldOriginX, float worldOriginZ);
+
+    int m_defaultWhiteSrv = -1;
+    int m_defaultBlackSrv = -1;
+    int m_defaultBlockSrv = -1;
+    int m_terrainAlbedoSrv = -1;
+    int m_terrainBlockSrv = -1;
+
+    QuadNode* m_quadRoot = nullptr;
+
+    QuadNode* BuildQuadTree(int tilesStartX, int tilesStartY, int tilesPerSide, int level);
+    void      DestroyQuadTree(QuadNode* node);
+    void      CollectVisibleNodes(QuadNode* node,
+        std::vector<int>& outMeshIndices);
+
+    void TraverseQuadTree(QuadNode* node,
+        const Frustum& frustum,
+        const DirectX::XMFLOAT3& cameraPos,
+        std::vector<int>& outMeshIndices,
+        UINT& outCulledCount,
+        UINT& outVisibleCount);
+
+    UINT m_terrainMeshCount = 0;
+
 };
