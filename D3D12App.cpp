@@ -290,6 +290,7 @@ void D3D12App::CreateConstantBuffers() {
 }
 
 bool D3D12App::Initialize(HWND hwnd) {
+    m_hwnd = hwnd;
     try {
         EnableDebugLayer();
         CreateDevice();
@@ -327,49 +328,21 @@ bool D3D12App::Initialize(HWND hwnd) {
             OutputDebugStringA(buf);
         }
 
-        {
-            float globalMin = 1e9f;
-            float globalMax = -1e9f;
-
-            for (int y = 0; y < 4; ++y) {
-                for (int x = 0; x < 4; ++x) {
-                    char path[256];
-                    sprintf_s(path, "assets/volcano/Erosion2/Erosion2_Out_y%d_x%d.png", y, x);
-
-                    int w = 0, h = 0;
-                    auto height = TerrainLoader::LoadHeightmap(path, w, h);
-                    if (height.empty()) continue;
-
-                    for (float v : height) {
-                        if (v < globalMin) globalMin = v;
-                        if (v > globalMax) globalMax = v;
-                    }
-                }
-            }
-
-            m_terrainHeightMin = globalMin;
-            m_terrainHeightMax = globalMax;
-
-            char buf[256];
-            sprintf_s(buf, "[Terrain] GLOBAL: min=%.4f max=%.4f\n", globalMin, globalMax);
-            OutputDebugStringA(buf);
+        if (!LoadAllHeightmaps()) {
+            OutputDebugStringA("[Terrain] Failed to load heightmaps\n");
+            return false;
         }
 
         {
-            const int tilesX = 4;
-            const int tilesZ = 4;
-            const float tileSize = m_terrainWorldSize;
+            const int tilesX = m_terrainConfig.tilesX;
+            const int tilesZ = m_terrainConfig.tilesZ;
+            const float tileSize = m_terrainConfig.worldSize;
 
             for (int y = 0; y < tilesZ; ++y) {
                 for (int x = 0; x < tilesX; ++x) {
 
-   
-                    char pathHeight[256];
-                    sprintf_s(pathHeight,
-                        "assets/volcano/Erosion2/Erosion2_Out_y%d_x%d.png", y, x);
-
-                    int w = 0, h = 0;
-                    auto height = TerrainLoader::LoadHeightmap(pathHeight, w, h);
+                    // Берём heightmap из кэша, а не грузим заново
+                    const auto& height = m_terrainHeightmaps[y][x];
                     if (height.empty()) {
                         char buf[256];
                         sprintf_s(buf, "[Terrain] Skipping tile y%d x%d (empty)\n", y, x);
@@ -377,32 +350,31 @@ bool D3D12App::Initialize(HWND hwnd) {
                         continue;
                     }
 
-                    SceneObject tile = CreateTerrainTileFromHeightmap(
-                        height, w, h,
-                        m_terrainGridRes,
-                        m_terrainWorldSize,
-                        m_terrainHeightMin, m_terrainHeightMax,
-                        m_terrainHeightScale);
+                    const int hw = 512;
+                    const int hh = 512;
 
-  
+                    SceneObject tile = CreateTerrainTileFromHeightmap(
+                        height, hw, hh,
+                        m_terrainConfig.gridRes,
+                        m_terrainConfig.worldSize,
+                        m_terrainHeightMin, m_terrainHeightMax,
+                        m_terrainConfig.heightScale);
+
                     XMFLOAT4X4 world;
                     XMStoreFloat4x4(&world, XMMatrixTranslation(
                         (float)x * tileSize, 0.0f, (float)y * tileSize));
                     tile.world = world;
 
-                    char pAlbedo[256], pNormal[256], pRough[256];
-                    sprintf_s(pAlbedo,
-                        "assets/volcano/SatMap/SatMap_Out_y%d_x%d.png", y, x);
-                    sprintf_s(pNormal,
-                        "assets/volcano/Normals/Normals_Out_y%d_x%d.png", y, x);
-
+                    char pAlbedo[256], pNormal[256];
+                    m_terrainConfig.MakeAlbedoPath(y, x, pAlbedo, sizeof(pAlbedo));
+                    m_terrainConfig.MakeNormalPath(y, x, pNormal, sizeof(pNormal));
 
                     MaterialPaths paths;
                     paths.albedo = pAlbedo;
                     paths.normal = pNormal;
                     paths.roughness = "";
-                    paths.metallic = "";   
-                    paths.ao = "";   
+                    paths.metallic = "";
+                    paths.ao = "";
 
                     auto& mat = tile.materials[0];
                     mat.albedoTexturePath = paths.albedo;
@@ -414,18 +386,14 @@ bool D3D12App::Initialize(HWND hwnd) {
                     int a, r, m, o, n;
                     if (LoadMaterialBlock(paths, a, r, m, o, n) < 0) {
                         OutputDebugStringA("[Terrain] LoadMaterialBlock failed\n");
-                        continue;  
+                        continue;
                     }
                     mat.albedoSrv = a;
                     mat.roughnessSrv = r;
                     mat.metallicSrv = m;
                     mat.aoSrv = o;
                     mat.normalSrv = n;
-                    mat.textureIndex = a;   // geometry pass использует это как базовый индекс
-
-                    tile.hasTextures = true;
-
-  
+                    mat.textureIndex = a;
 
                     tile.hasTextures = true;
 
@@ -433,8 +401,7 @@ bool D3D12App::Initialize(HWND hwnd) {
                     m_objects.push_back(std::move(tile));
 
                     char buf[256];
-                    sprintf_s(buf,
-                        "[Terrain] Tile y%d x%d loaded with textures\n", y, x);
+                    sprintf_s(buf, "[Terrain] Tile y%d x%d loaded\n", y, x);
                     OutputDebugStringA(buf);
                 }
             }
@@ -725,11 +692,41 @@ void D3D12App::RenderFrame() {
         XMFLOAT4X4 viewProjF;
         XMStoreFloat4x4(&viewProjF, viewProj);
 
+        m_frustum.ExtractFromViewProj(viewProjF);
+
         std::vector<RenderingSystem::RenderData> renderData;
         renderData.reserve(m_objects.size());
 
+        UINT culledCount = 0;
+
         for (UINT o = 0; o < (UINT)m_objects.size() && o < kMaxObjects; ++o) {
             auto& obj = m_objects[o];
+
+            // ---- FRUSTUM CULLING ----
+            XMMATRIX world = XMLoadFloat4x4(&obj.world);
+
+            XMFLOAT3 lmin = obj.bounds.min;
+            XMFLOAT3 lmax = obj.bounds.max;
+
+            XMFLOAT3 corners[8] = {
+                { lmin.x, lmin.y, lmin.z }, { lmax.x, lmin.y, lmin.z },
+                { lmin.x, lmax.y, lmin.z }, { lmax.x, lmax.y, lmin.z },
+                { lmin.x, lmin.y, lmax.z }, { lmax.x, lmin.y, lmax.z },
+                { lmin.x, lmax.y, lmax.z }, { lmax.x, lmax.y, lmax.z }
+            };
+
+            AABB worldBounds;
+            for (auto& c : corners) {
+                XMVECTOR p = XMVector3TransformCoord(XMLoadFloat3(&c), world);
+                XMFLOAT3 wp;
+                XMStoreFloat3(&wp, p);
+                worldBounds.Expand(wp);
+            }
+
+            if (!m_frustum.Intersects(worldBounds)) {
+                culledCount++;
+                continue;
+            }
 
             RenderingSystem::RenderData rd = {};
             rd.vertexBuffer = obj.vertexBuffer.Get();
@@ -746,6 +743,7 @@ void D3D12App::RenderFrame() {
             rd.cameraPos = cameraPos;
             renderData.push_back(rd);
         }
+
 
         static LARGE_INTEGER freq = {};
         static LARGE_INTEGER last = {};
@@ -765,6 +763,17 @@ void D3D12App::RenderFrame() {
         m_renderingSystem->Update(deltaTime);
         m_renderingSystem->SetGlobalIntensity(m_lightIntensity);
 
+
+        if (m_hwnd) {
+            char title[256];
+            static float s_smoothedDt = 0.016f;
+            s_smoothedDt = s_smoothedDt * 0.95f + deltaTime * 0.05f;
+            float fps = 1.0f / std::max(0.0001f, s_smoothedDt);
+            sprintf_s(title,
+                "D3D12 Sponza - visible: %zu / %zu   (culled: %u)   FPS: %.1f",
+                renderData.size(), m_objects.size(), culledCount, fps);
+            SetWindowTextA(m_hwnd, title);
+        }
 
         // Вызываем deferred rendering
         m_renderingSystem->Render(
@@ -1016,6 +1025,8 @@ bool D3D12App::LoadSceneObject(const std::string& objPath,
 
 void D3D12App::CreateMeshBuffers(SceneObject& obj) {
     if (obj.vertices.empty() || obj.indices.empty()) return;
+    
+    UpdateObjectBounds(obj);
 
     D3D12_HEAP_PROPERTIES uploadHeapProps = {};
     uploadHeapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
@@ -1286,4 +1297,66 @@ int D3D12App::LoadMaterialBlock(const MaterialPaths& paths,
 
     m_srvHeapUsed += 5;
     return base;
+}
+
+void D3D12App::UpdateObjectBounds(SceneObject& obj) {
+    obj.bounds = AABB{};
+    for (const auto& v : obj.vertices) {
+        obj.bounds.Expand(v.position);
+    }
+}
+
+bool D3D12App::LoadAllHeightmaps() {
+    const int tilesX = m_terrainConfig.tilesX;
+    const int tilesZ = m_terrainConfig.tilesZ;
+
+    m_terrainHeightmaps.clear();
+    m_terrainHeightmaps.resize(tilesZ);
+
+    float globalMin = 1e9f;
+    float globalMax = -1e9f;
+
+    int loadedCount = 0;
+
+    for (int y = 0; y < tilesZ; ++y) {
+        m_terrainHeightmaps[y].resize(tilesX);
+
+        for (int x = 0; x < tilesX; ++x) {
+            char path[256];
+            m_terrainConfig.MakeHeightmapPath(y, x, path, sizeof(path));
+
+            int w = 0, h = 0;
+            auto height = TerrainLoader::LoadHeightmap(path, w, h);
+
+            if (height.empty()) {
+                char buf[256];
+                sprintf_s(buf, "[Terrain] Skipping heightmap y%d x%d (empty)\n", y, x);
+                OutputDebugStringA(buf);
+                continue;
+            }
+
+            for (float v : height) {
+                if (v < globalMin) globalMin = v;
+                if (v > globalMax) globalMax = v;
+            }
+
+            m_terrainHeightmaps[y][x] = std::move(height);
+            loadedCount++;
+        }
+    }
+
+    if (loadedCount == 0) {
+        OutputDebugStringA("[Terrain] No heightmaps loaded\n");
+        return false;
+    }
+
+    m_terrainHeightMin = globalMin;
+    m_terrainHeightMax = globalMax;
+
+    char buf[256];
+    sprintf_s(buf, "[Terrain] Loaded %d heightmaps. GLOBAL: min=%.4f max=%.4f\n",
+        loadedCount, globalMin, globalMax);
+    OutputDebugStringA(buf);
+
+    return true;
 }

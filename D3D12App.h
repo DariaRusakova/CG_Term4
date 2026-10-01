@@ -12,6 +12,9 @@
 #include "Rendering/RenderingSystem.h"
 #include "Shaders/DeferredGeometryPass.h"
 #include "Shaders/DeferredLightPass.h"
+#include "Terrain/AABB.h"
+#include "Terrain/Frustum.h"
+#include "Terrain/TerrainConfig.h"
 
 struct alignas(256) SceneConstantBuffer {
     DirectX::XMFLOAT4X4 worldViewProj;
@@ -49,6 +52,7 @@ struct SceneObject {
     UINT indexCount = 0;
 
     DirectX::XMFLOAT4X4 world = { /* ... */ };
+    AABB bounds;
     bool hasTextures = false;
 };
 
@@ -165,12 +169,12 @@ private:
     D3D12_VIEWPORT m_viewport;
     D3D12_RECT     m_scissorRect;
 
-    float m_terrainHeightMin = 0.0f;    
-    float m_terrainHeightMax = 1.0f;   
-    float m_terrainWorldSize = 512.0f;  
-    float m_terrainHeightScale = 300.0f; 
-    int   m_terrainGridRes = 129;
+    TerrainConfig m_terrainConfig;
 
+    std::vector<std::vector<std::vector<float>>> m_terrainHeightmaps;
+    float m_terrainHeightMin = 0.0f;
+    float m_terrainHeightMax = 1.0f;
+    bool LoadAllHeightmaps();
     SceneObject CreateTerrainTileFromHeightmap(
         const std::vector<float>& heightmap,
         int heightmapWidth, int heightmapHeight,
@@ -182,4 +186,8 @@ private:
     int LoadMaterialBlock(const MaterialPaths& paths,
         int& outAlbedo, int& outRoughness,
         int& outMetallic, int& outAO, int& outNormal);
+
+    void UpdateObjectBounds(SceneObject& obj);
+    Frustum m_frustum;
+    HWND m_hwnd = nullptr;
 };

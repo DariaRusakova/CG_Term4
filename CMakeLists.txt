@@ -16,6 +16,8 @@ set(SOURCES
     Model/ModelLoader.cpp
     Texture/TextureLoader.cpp
     Terrain/TerrainLoader.cpp
+    Terrain/Frustum.cpp
+    Terrain/TerrainConfig.cpp
     Rendering/GBuffer.cpp
     Rendering/RenderingSystem.cpp
     Rendering/Light.cpp
