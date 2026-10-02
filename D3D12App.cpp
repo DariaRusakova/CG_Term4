@@ -15,7 +15,6 @@
 using namespace DirectX;
 using Microsoft::WRL::ComPtr;
 
-// Вспомогательная функция
 inline void ThrowIfFailed(HRESULT hr, const char* errorMsg = "") {
     if (FAILED(hr)) {
         char buffer[512];
@@ -83,11 +82,11 @@ static SceneObject CreateUVSphere(float radius, int segments, int rings) {
 
     for (int y = 0; y <= rings; ++y) {
         float v = (float)y / rings;
-        float phi = v * XM_PI;   // 0..PI
+        float phi = v * XM_PI;   
 
         for (int x = 0; x <= segments; ++x) {
             float u = (float)x / segments;
-            float theta = u * XM_2PI;   // 0..2PI
+            float theta = u * XM_2PI;  
 
             float px = radius * sinf(phi) * cosf(theta);
             float py = radius * cosf(phi);
@@ -128,9 +127,6 @@ static SceneObject CreateUVSphere(float radius, int segments, int rings) {
 }
 
 
-// ==============================================
-// Инициализация
-// ==============================================
 
 void D3D12App::EnableDebugLayer() {
 #ifdef _DEBUG
@@ -390,21 +386,24 @@ bool D3D12App::Initialize(HWND hwnd) {
                 m_srvHeap->GetCPUDescriptorHandleForHeapStart();
 
             const int resIndices[5] = {
-                -1,                       // [0] = atlas 
+                -1,                       // [0] = atlas (по SRV-слоту, не по текстуре)
                 m_defaultWhiteTexIndex,   // [1] = white roughness
                 m_defaultBlackTexIndex,   // [2] = black metallic
                 m_defaultWhiteTexIndex,   // [3] = white ao
                 m_defaultWhiteTexIndex,   // [4] = white normal
             };
 
+           
+
             const UINT blockBase = m_srvHeapUsed;
 
+            // [0] — atlas
             {
                 D3D12_CPU_DESCRIPTOR_HANDLE h = heapStart;
                 h.ptr += (UINT64)(blockBase + 0) * m_srvDescriptorSize;
 
                 D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-                srvDesc.Format = m_textures.back().format;   
+                srvDesc.Format = m_textures.back().format;   // atlas — последний в m_textures
                 srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
                 srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
                 srvDesc.Texture2D.MipLevels = 1;
@@ -413,6 +412,7 @@ bool D3D12App::Initialize(HWND hwnd) {
                     m_textures.back().resource.Get(), &srvDesc, h);
             }
 
+            // [1..4] — дефолтные текстуры
             for (int i = 1; i < 5; ++i) {
                 D3D12_CPU_DESCRIPTOR_HANDLE h = heapStart;
                 h.ptr += (UINT64)(blockBase + i) * m_srvDescriptorSize;
@@ -472,7 +472,7 @@ bool D3D12App::Initialize(HWND hwnd) {
             paths.normal = "assets/Cerberus_by_Andrew_Maximov/Textures/Cerberus_N.jpg";
             paths.roughness = "assets/Cerberus_by_Andrew_Maximov/Textures/Cerberus_R.jpg";
             paths.metallic = "assets/Cerberus_by_Andrew_Maximov/Textures/Cerberus_M.jpg";
-            paths.ao = ""; 
+            paths.ao = "";  
 
             SceneObject cerberus;
             XMFLOAT4X4 world;
@@ -591,7 +591,6 @@ void D3D12App::CreateGeometryPassRootSignature() {
     rootParams[0].Descriptor.ShaderRegister = 0;
     rootParams[0].Descriptor.RegisterSpace = 0;
 
-    // Descriptor Table для текстур
     D3D12_DESCRIPTOR_RANGE descRange = {};
     descRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
     descRange.NumDescriptors = 5;
@@ -604,7 +603,6 @@ void D3D12App::CreateGeometryPassRootSignature() {
     rootParams[1].DescriptorTable.NumDescriptorRanges = 1;
     rootParams[1].DescriptorTable.pDescriptorRanges = &descRange;
 
-    // Статический сэмплер
     D3D12_STATIC_SAMPLER_DESC sampler = {};
     sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
     sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
@@ -635,7 +633,6 @@ void D3D12App::CreateGeometryPassRootSignature() {
     ThrowIfFailed(hr, "Create geometry root signature");
 }
 
-// Замените CreatePipelineState() на:
 void D3D12App::CreateGeometryPassPipelineState() {
     ComPtr<ID3DBlob> vs, ps, error;
 
@@ -644,7 +641,6 @@ void D3D12App::CreateGeometryPassPipelineState() {
     compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
 #endif
 
-    // Компилируем геометрические шейдеры с несколькими render targets
     HRESULT hr = D3DCompile(Shaders::GeometryVS, strlen(Shaders::GeometryVS),
         "VS", nullptr, nullptr, "main", "vs_5_0", compileFlags, 0, &vs, &error);
 
@@ -660,7 +656,6 @@ void D3D12App::CreateGeometryPassPipelineState() {
         ThrowIfFailed(hr, "Compile geometry PS");
     }
 
-    // Input Layout
     D3D12_INPUT_ELEMENT_DESC inputDesc[] = {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
         { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
@@ -719,7 +714,6 @@ void D3D12App::RenderFrame() {
         m_commandList->RSSetViewports(1, &m_viewport);
         m_commandList->RSSetScissorRects(1, &m_scissorRect);
 
-        // Барьер для Render Target (back buffer)
         D3D12_RESOURCE_BARRIER barrier = {};
         barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
@@ -729,12 +723,10 @@ void D3D12App::RenderFrame() {
         barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
         m_commandList->ResourceBarrier(1, &barrier);
 
-        // Получаем дескрипторы
         D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = m_rtvHeap->GetCPUDescriptorHandleForHeapStart();
         rtvHandle.ptr += m_frameIndex * m_rtvDescriptorSize;
         D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = m_dsvHeap->GetCPUDescriptorHandleForHeapStart();
 
-        // Устанавливаем текстуры для геометрического прохода
         ID3D12DescriptorHeap* ppHeaps[] = { m_srvHeap.Get() };
         m_commandList->SetDescriptorHeaps(_countof(ppHeaps), ppHeaps);
 
@@ -841,6 +833,36 @@ void D3D12App::RenderFrame() {
 
         if (deltaTime > 0.1f) deltaTime = 0.1f;
 
+        {
+            float moveSpeed = 500.0f;   // единиц/сек
+
+            if (GetAsyncKeyState(VK_SHIFT) & 0x8000) {
+                moveSpeed *= 3.0f;
+            }
+
+            float forward = 0.0f;
+            float right = 0.0f;
+            float up = 0.0f;
+
+            if (m_keyW) forward += 1.0f;
+            if (m_keyS) forward -= 1.0f;
+            if (m_keyD) right += 1.0f;
+            if (m_keyA) right -= 1.0f;
+            if (m_keyE) up += 1.0f;
+            if (m_keyQ) up -= 1.0f;
+
+            if (forward != 0.0f || right != 0.0f || up != 0.0f) {
+                float len = sqrtf(forward * forward + right * right + up * up);
+                if (len > 1e-6f) {
+                    forward /= len;
+                    right /= len;
+                    up /= len;
+                }
+                float dist = moveSpeed * deltaTime;
+                m_camera.Move(forward * dist, right * dist, up * dist);
+            }
+        }
+
         m_shootCooldown = std::max(0.0f, m_shootCooldown - deltaTime);
 
         m_renderingSystem->Update(deltaTime);
@@ -861,7 +883,6 @@ void D3D12App::RenderFrame() {
             SetWindowTextA(m_hwnd, title);
         }
 
-        // Вызываем deferred rendering
         m_renderingSystem->Render(
             m_commandList.Get(),
             m_depthStencil.Get(),
@@ -873,7 +894,6 @@ void D3D12App::RenderFrame() {
             (UINT)renderData.size()
         );
 
-        // Барьер для Present
         barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
         barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
         m_commandList->ResourceBarrier(1, &barrier);
@@ -893,9 +913,6 @@ void D3D12App::RenderFrame() {
 }
 
 
-// ==============================================
-// Ожидание и синхронизация
-// ==============================================
 
 void D3D12App::WaitForPreviousFrame() {
     if (m_fence->GetCompletedValue() < m_fenceValue) {
@@ -916,9 +933,6 @@ void D3D12App::WaitForGpu() {
     WaitForSingleObject(m_fenceEvent, INFINITE);
 }
 
-// ==============================================
-// Управление камерой и ввод
-// ==============================================
 
 void D3D12App::OnMouseWheel(int delta) {
     float zoomAmount = (delta > 0) ? 0.5f : -0.5f;
@@ -949,12 +963,13 @@ void D3D12App::OnMouseMove(int x, int y) {
 
 void D3D12App::OnKeyDown(WPARAM wParam) {
     switch (wParam) {
-    case 'W': 
-        m_camera.ZoomScaled(0.9f);
-        break;
-    case 'S': 
-        m_camera.ZoomScaled(1.1f); 
-        break;
+    case 'W': m_keyW = true; break;
+    case 'S': m_keyS = true; break;
+    case 'A': m_keyA = true; break;
+    case 'D': m_keyD = true; break;
+    case 'Q': m_keyQ = true; break;
+    case 'E': m_keyE = true; break;
+
     case VK_UP:
         m_camera.Rotate(0, -10);
         break;
@@ -967,42 +982,24 @@ void D3D12App::OnKeyDown(WPARAM wParam) {
     case VK_RIGHT:
         m_camera.Rotate(10, 0);
         break;
-    case 'A': m_camera.MoveTarget(-50.0f, 0.0f, 0.0f); break; 
-    case 'D': m_camera.MoveTarget(50.0f, 0.0f, 0.0f); break;  
-    case 'Q': m_camera.MoveTarget(0.0f, 0.0f, -50.0f); break; 
-    case 'E': m_camera.MoveTarget(0.0f, 0.0f, 50.0f); break;  
 
-    case 'O':  // Увеличить интенсивность
+    case 'O':
         m_lightIntensity += m_lightIntensityStep;
         if (m_lightIntensity > 5.0f) m_lightIntensity = 5.0f;
-        {
-            char buf[64];
-            sprintf_s(buf, "Light Intensity: %.1f\n", m_lightIntensity);
-            OutputDebugStringA(buf);
-        }
         break;
-
-    case 'P':  // Уменьшить интенсивность
+    case 'P':
         m_lightIntensity -= m_lightIntensityStep;
         if (m_lightIntensity < 0.0f) m_lightIntensity = 0.0f;
-        {
-            char buf[64];
-            sprintf_s(buf, "Light Intensity: %.1f\n", m_lightIntensity);
-            OutputDebugStringA(buf);
-        }
         break;
-
-    case '0':  // Сброс до 1.0
+    case '0':
         m_lightIntensity = 1.0f;
-        OutputDebugStringA("Light Intensity Reset to 1.0\n");
         break;
     case VK_SPACE: {
         if (m_shootCooldown > 0.0f) break;
 
         XMFLOAT3 camPos = m_camera.GetPosition();
 
-        // Точка, куда летит снаряд (можно независимо от target камеры)
-        const float aimHeight = 2.0f;     // выше центра модели
+        const float aimHeight = 2.0f;     
         XMFLOAT3 aimPoint = { 0.0f, aimHeight, 0.0f };
 
         XMFLOAT3 toAim = {
@@ -1014,8 +1011,8 @@ void D3D12App::OnKeyDown(WPARAM wParam) {
         XMFLOAT3 dir;
         XMStoreFloat3(&dir, dirV);
 
-        const float spawnForward = 1.0f;    // вперёд от камеры
-        const float spawnUp = 0.3f;    // ← дополнительный подъём точки старта
+        const float spawnForward = 1.0f;   
+        const float spawnUp = 0.3f;    
 
         XMFLOAT3 spawn = {
             camPos.x + dir.x * spawnForward,
@@ -1032,6 +1029,17 @@ void D3D12App::OnKeyDown(WPARAM wParam) {
         m_shootCooldown = 0.15f;
         break;
     }
+    }
+}
+
+void D3D12App::OnKeyUp(WPARAM wParam) {
+    switch (wParam) {
+    case 'W': m_keyW = false; break;
+    case 'S': m_keyS = false; break;
+    case 'A': m_keyA = false; break;
+    case 'D': m_keyD = false; break;
+    case 'Q': m_keyQ = false; break;
+    case 'E': m_keyE = false; break;
     }
 }
 
@@ -1058,7 +1066,6 @@ bool D3D12App::LoadSceneObject(const std::string& objPath,
         outObject.indexCount = (UINT)outObject.indices.size();
         outObject.world = world;
 
-        // Проверка существования файла
         auto fileExists = [](const std::string& path) -> bool {
             if (path.empty()) return false;
             DWORD attrs = GetFileAttributesA(path.c_str());
@@ -1081,7 +1088,7 @@ bool D3D12App::LoadSceneObject(const std::string& objPath,
             mat.aoSrv = o;
             mat.normalSrv = n;
 
-            mat.textureIndex = a;   // legacy — geometry pass использует как базовый индекс
+            mat.textureIndex = a;   
 
             char buf[256];
             sprintf_s(buf, "[Material] '%s': base=%d (A=%d R=%d M=%d AO=%d N=%d)\n",
@@ -1129,7 +1136,6 @@ void D3D12App::CreateMeshBuffers(SceneObject& obj) {
     bufferDesc.SampleDesc.Count = 1;
     bufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
-    // ---- Vertex buffer ----
     const UINT vbSize = (UINT)(sizeof(Vertex) * obj.vertices.size());
     bufferDesc.Width = vbSize;
 
@@ -1148,7 +1154,6 @@ void D3D12App::CreateMeshBuffers(SceneObject& obj) {
         D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
         IID_PPV_ARGS(&obj.vertexBuffer)), "Create VB");
 
-    // ---- Index buffer ----
     const UINT ibSize = (UINT)(sizeof(uint32_t) * obj.indices.size());
     bufferDesc.Width = ibSize;
 
@@ -1166,7 +1171,6 @@ void D3D12App::CreateMeshBuffers(SceneObject& obj) {
         D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
         IID_PPV_ARGS(&obj.indexBuffer)), "Create IB");
 
-    // ---- Копирование ----
     m_commandList->CopyResource(obj.vertexBuffer.Get(), obj.vbUpload.Get());
     m_commandList->CopyResource(obj.indexBuffer.Get(), obj.ibUpload.Get());
 
@@ -1369,37 +1373,34 @@ SceneObject D3D12App::CreateTerrainMesh(
 
     const float half = nodeWorldSize * 0.5f;
     const float step = nodeWorldSize / (gridRes - 1);
-
-
     const float centerWorldX = worldOriginX + half;
     const float centerWorldZ = worldOriginZ + half;
 
+    const float tilesXf = (float)m_terrainConfig.tilesX;
+    const float tilesZf = (float)m_terrainConfig.tilesZ;
+
+
+    auto makeUV = [&](int x, int z) -> XMFLOAT2 {
+        float localU = (float)x / (gridRes - 1);
+        float localV = (float)z / (gridRes - 1);
+        float uvU = ((float)tilesStartX + localU * tilesPerSide) / tilesXf;
+        float uvV = ((float)tilesStartY + localV * tilesPerSide) / tilesZf;
+        return XMFLOAT2(uvU, uvV);
+        };
 
     for (int z = 0; z < gridRes; ++z) {
         for (int x = 0; x < gridRes; ++x) {
-
             float localX = -half + x * step;
             float localZ = -half + z * step;
 
-
             float wx = centerWorldX + localX;
             float wz = centerWorldZ + localZ;
-
             float wy = SampleHeightWorld(wx, wz);
 
             Vertex vtx;
             vtx.position = XMFLOAT3(localX, wy, localZ);
             vtx.normal = XMFLOAT3(0, 1, 0);
-            const float tilesX = (float)m_terrainConfig.tilesX;
-            const float tilesZ = (float)m_terrainConfig.tilesZ;
-
-            float localU = (float)x / (gridRes - 1);
-            float localV = (float)z / (gridRes - 1);
-
-            float uvU = ((float)tilesStartX + localU * tilesPerSide) / tilesX;
-            float uvV = ((float)tilesStartY + localV * tilesPerSide) / tilesZ;
-
-            vtx.texcoord = XMFLOAT2(uvU, uvV);
+            vtx.texcoord = makeUV(x, z);
             node.vertices.push_back(vtx);
         }
     }
@@ -1440,6 +1441,93 @@ SceneObject D3D12App::CreateTerrainMesh(
             node.indices.push_back(c);
             node.indices.push_back(d);
         }
+    }
+
+    const float skirtDepth = m_terrainConfig.skirtDepth;
+
+
+    auto addSkirtPair = [&](int borderIdx) -> uint32_t {
+        const Vertex& top = node.vertices[borderIdx];
+
+        Vertex bot;
+        bot.position = XMFLOAT3(top.position.x,
+            top.position.y - skirtDepth,
+            top.position.z);
+        bot.normal = top.normal;      
+        bot.texcoord = top.texcoord;     
+        node.vertices.push_back(bot);
+        return (uint32_t)(node.vertices.size() - 1);
+        };
+
+    auto stitchSkirt = [&](const std::vector<std::pair<int, uint32_t>>& pairs,
+        bool flipWinding)
+        {
+            for (size_t i = 0; i + 1 < pairs.size(); ++i) {
+                uint32_t t0 = (uint32_t)pairs[i].first;
+                uint32_t b0 = pairs[i].second;
+                uint32_t t1 = (uint32_t)pairs[i + 1].first;
+                uint32_t b1 = pairs[i + 1].second;
+
+                if (!flipWinding) {
+                    node.indices.push_back(t0);
+                    node.indices.push_back(b0);
+                    node.indices.push_back(t1);
+
+                    node.indices.push_back(t1);
+                    node.indices.push_back(b0);
+                    node.indices.push_back(b1);
+                }
+                else {
+                    node.indices.push_back(t0);
+                    node.indices.push_back(t1);
+                    node.indices.push_back(b0);
+
+                    node.indices.push_back(t1);
+                    node.indices.push_back(b1);
+                    node.indices.push_back(b0);
+                }
+            }
+        };
+
+
+    {
+        std::vector<std::pair<int, uint32_t>> pairs;
+        pairs.reserve(gridRes);
+        for (int x = 0; x < gridRes; ++x) {
+            int borderIdx = 0 * gridRes + x; 
+            pairs.push_back({ borderIdx, addSkirtPair(borderIdx) });
+        }
+        stitchSkirt(pairs, false);
+    }
+
+    {
+        std::vector<std::pair<int, uint32_t>> pairs;
+        pairs.reserve(gridRes);
+        for (int x = 0; x < gridRes; ++x) {
+            int borderIdx = (gridRes - 1) * gridRes + x;
+            pairs.push_back({ borderIdx, addSkirtPair(borderIdx) });
+        }
+        stitchSkirt(pairs, true);
+    }
+
+    {
+        std::vector<std::pair<int, uint32_t>> pairs;
+        pairs.reserve(gridRes);
+        for (int z = 0; z < gridRes; ++z) {
+            int borderIdx = z * gridRes + 0;
+            pairs.push_back({ borderIdx, addSkirtPair(borderIdx) });
+        }
+        stitchSkirt(pairs, true);
+    }
+
+    {
+        std::vector<std::pair<int, uint32_t>> pairs;
+        pairs.reserve(gridRes);
+        for (int z = 0; z < gridRes; ++z) {
+            int borderIdx = z * gridRes + (gridRes - 1);
+            pairs.push_back({ borderIdx, addSkirtPair(borderIdx) });
+        }
+        stitchSkirt(pairs, false);
     }
 
     Material mat;
@@ -1630,6 +1718,19 @@ QuadNode* D3D12App::BuildQuadTree(
 
     XMStoreFloat4x4(&mesh.world,
         XMMatrixTranslation(centerWorldX, 0.0f, centerWorldZ));
+
+
+    {
+        AABB worldBounds;
+        for (const auto& v : mesh.vertices) {
+            XMFLOAT3 wp;
+            wp.x = v.position.x + centerWorldX;
+            wp.y = v.position.y;
+            wp.z = v.position.z + centerWorldZ;
+            worldBounds.Expand(wp);
+        }
+        node->bounds = worldBounds;
+    }
 
     node->meshIndex = (int)m_objects.size();
     m_objects.push_back(std::move(mesh));

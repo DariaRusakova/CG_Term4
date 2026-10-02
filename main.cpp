@@ -33,6 +33,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
         return 0;
 
+    case WM_KEYUP:
+        if (app) app->OnKeyUp(wParam);
+        return 0;
+
     case WM_DESTROY:
         PostQuitMessage(0);
         return 0;

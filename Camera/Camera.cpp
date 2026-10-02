@@ -8,53 +8,84 @@ Camera::Camera() {
 }
 
 void Camera::Update(float aspectRatio) {
-    m_proj = XMMatrixPerspectiveFovLH(XM_PIDIV4, aspectRatio, 0.1f, 5000.0f);
+    m_proj = XMMatrixPerspectiveFovLH(XM_PIDIV4, aspectRatio, 0.1f, 10000.0f);
     Recalculate();
 }
 
 void Camera::Rotate(int dx, int dy) {
     m_yaw += dx * m_rotateSpeed;
-    m_pitch += dy * m_rotateSpeed;
-    m_pitch = std::clamp(m_pitch, 0.05f, XM_PIDIV2 - 0.1f);
+    m_pitch -= dy * m_rotateSpeed;  
+    m_pitch = std::clamp(m_pitch, m_minPitch, m_maxPitch);
     Recalculate();
 }
 
-void Camera::Zoom(float amount) {
-    m_distance -= amount * m_zoomSpeed;
-    m_distance = std::clamp(m_distance, m_minDistance, m_maxDistance);
-    Recalculate();
+void Camera::Zoom(float ) {
+
 }
 
 void Camera::Reset() {
-    m_distance = 800.0f;
-    m_yaw = 0.0f;
-    m_pitch = 0.6f;
+    m_position = { 0.0f, 800.0f, 1800.0f };
+    m_yaw = XM_PI;
+    m_pitch = -0.35f;
     Recalculate();
 }
 
-XMFLOAT3 Camera::GetPosition() const {
-    float x = m_distance * sinf(m_yaw) * cosf(m_pitch);
-    float y = m_distance * sinf(m_pitch);
-    float z = m_distance * cosf(m_yaw) * cosf(m_pitch);
+XMFLOAT3 Camera::GetForward() const {
+    float cp = cosf(m_pitch);
+    float sp = sinf(m_pitch);
+    float cy = cosf(m_yaw);
+    float sy = sinf(m_yaw);
 
-    const float minY = 300.0f;
-    if (y < minY) y = minY;
+    XMFLOAT3 fwd;
+    fwd.x = -sy * cp;  
+    fwd.y = sp;        
+    fwd.z = -cy * cp;  
+    return fwd;
+}
 
-    return XMFLOAT3(x, y, z);
+XMFLOAT3 Camera::GetRight() const {
+
+    XMFLOAT3 r;
+    r.x = cosf(m_yaw);
+    r.y = 0.0f;
+    r.z = -sinf(m_yaw);
+    return r;
+}
+
+void Camera::Move(float forward, float right, float up) {
+    XMFLOAT3 fwd = GetForward();
+    XMFLOAT3 rgt = GetRight();
+
+    XMFLOAT3 fwdHoriz = { fwd.x, 0.0f, fwd.z };
+    float lenF = sqrtf(fwdHoriz.x * fwdHoriz.x + fwdHoriz.z * fwdHoriz.z);
+    if (lenF > 1e-6f) {
+        fwdHoriz.x /= lenF;
+        fwdHoriz.z /= lenF;
+    }
+    else {
+        fwdHoriz = { 0.0f, 0.0f, 1.0f };
+    }
+
+    m_position.x += fwdHoriz.x * forward + rgt.x * right;
+    m_position.y += up;
+    m_position.z += fwdHoriz.z * forward + rgt.z * right;
+
+    Recalculate();
+}
+
+void Camera::MoveAlongForward(float amount) {
+    XMFLOAT3 fwd = GetForward();
+    m_position.x += fwd.x * amount;
+    m_position.y += fwd.y * amount;
+    m_position.z += fwd.z * amount;
+    Recalculate();
 }
 
 void Camera::Recalculate() {
-    XMVECTOR pos = XMLoadFloat3(&GetPosition());
-    XMVECTOR target = XMLoadFloat3(&m_target);
+    XMVECTOR pos = XMLoadFloat3(&m_position);
+    XMFLOAT3 f3 = GetForward();
+    XMVECTOR fwd = XMLoadFloat3(&f3);
     XMVECTOR up = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
-    m_view = XMMatrixLookAtLH(pos, target, up);
-}
 
-XMFLOAT3 Camera::GetForward() const {
-    XMFLOAT3 pos = GetPosition();
-    XMFLOAT3 tgt = GetTarget();
-    XMVECTOR dir = XMLoadFloat3(&tgt) - XMLoadFloat3(&pos);
-    XMFLOAT3 out;
-    XMStoreFloat3(&out, XMVector3Normalize(dir));
-    return out;
+    m_view = XMMatrixLookToLH(pos, fwd, up);
 }

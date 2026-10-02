@@ -87,6 +87,7 @@ public:
     void OnMouseUp();
     void OnMouseMove(int x, int y);
     void OnKeyDown(WPARAM wParam);
+    void OnKeyUp(WPARAM wParam);
     void ResetCamera();
     float m_shootCooldown = 0.0f;
 
@@ -94,6 +95,13 @@ private:
     static constexpr uint32_t kFrameCount = 2;
     static constexpr uint32_t kWidth = 1024;
     static constexpr uint32_t kHeight = 768;
+
+    bool m_keyW = false;
+    bool m_keyS = false;
+    bool m_keyA = false;
+    bool m_keyD = false;
+    bool m_keyQ = false;
+    bool m_keyE = false;
 
     void EnableDebugLayer();
     void CreateDevice();

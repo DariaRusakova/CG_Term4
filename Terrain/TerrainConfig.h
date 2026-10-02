@@ -12,6 +12,7 @@ struct TerrainConfig {
     int   maxLevel = 2;     
     float splitFactor = 4.0f;
     float mergeFactor = 6.0f;
+    float skirtDepth = 20.0f;
 
     const char* heightmapPattern = "assets/volcano/Erosion2/Erosion2_Out_y%d_x%d.png";
     const char* albedoPattern = "assets/volcano/SatMap/SatMap_Out_y%d_x%d.png";
