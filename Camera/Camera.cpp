@@ -4,29 +4,33 @@
 using namespace DirectX;
 
 Camera::Camera() {
+    RecalculateProjection();
     Recalculate();
 }
 
 void Camera::Update(float aspectRatio) {
-    m_proj = XMMatrixPerspectiveFovLH(XM_PIDIV4, aspectRatio, 0.1f, 10000.0f);
+    m_aspect = aspectRatio;
+    RecalculateProjection();
     Recalculate();
 }
 
 void Camera::Rotate(int dx, int dy) {
     m_yaw += dx * m_rotateSpeed;
-    m_pitch -= dy * m_rotateSpeed;  
+    m_pitch -= dy * m_rotateSpeed;
     m_pitch = std::clamp(m_pitch, m_minPitch, m_maxPitch);
     Recalculate();
 }
 
-void Camera::Zoom(float ) {
-
+void Camera::Zoom(float) {
 }
 
 void Camera::Reset() {
     m_position = { 0.0f, 800.0f, 1800.0f };
     m_yaw = XM_PI;
     m_pitch = -0.35f;
+    m_jitterX = 0.0f;
+    m_jitterY = 0.0f;
+    RecalculateProjection();
     Recalculate();
 }
 
@@ -37,14 +41,13 @@ XMFLOAT3 Camera::GetForward() const {
     float sy = sinf(m_yaw);
 
     XMFLOAT3 fwd;
-    fwd.x = -sy * cp;  
-    fwd.y = sp;        
-    fwd.z = -cy * cp;  
+    fwd.x = -sy * cp;
+    fwd.y = sp;
+    fwd.z = -cy * cp;
     return fwd;
 }
 
 XMFLOAT3 Camera::GetRight() const {
-
     XMFLOAT3 r;
     r.x = cosf(m_yaw);
     r.y = 0.0f;
@@ -79,6 +82,16 @@ void Camera::MoveAlongForward(float amount) {
     m_position.y += fwd.y * amount;
     m_position.z += fwd.z * amount;
     Recalculate();
+}
+
+void Camera::RecalculateProjection() {
+    XMMATRIX proj = XMMatrixPerspectiveFovLH(
+        XM_PIDIV4, m_aspect, 0.1f, 10000.0f);
+
+    proj.r[2].m128_f32[0] += m_jitterX;
+    proj.r[2].m128_f32[1] += m_jitterY;
+
+    m_proj = proj;
 }
 
 void Camera::Recalculate() {

@@ -17,7 +17,7 @@
 #include "Terrain/TerrainConfig.h"
 #include "Terrain/QuadNode.h"
 #include "Shadows/ShadowMap.h"
-
+#include "Shadows/TAA.h"
 
 struct alignas(256) SceneConstantBuffer {
     DirectX::XMFLOAT4X4 worldViewProj;
@@ -92,6 +92,9 @@ public:
     void ResetCamera();
     float m_shootCooldown = 0.0f;
 
+    void ToggleTAA();        
+    bool IsTAAEnabled() const;
+
 private:
     static constexpr uint32_t kFrameCount = 2;
     static constexpr uint32_t kWidth = 1024;
@@ -128,7 +131,6 @@ private:
         SceneObject& outObject,
         const MaterialPaths& paths);
 
-    // Создание VB/IB для объекта
     void CreateMeshBuffers(SceneObject& obj);
 
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_geometryRootSignature;
@@ -161,7 +163,6 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> m_constantBuffer[kFrameCount][kMaxObjects];
     void* m_cbvDataBegin[kFrameCount][kMaxObjects] = {};
 
-    // Текстуры — один общий SRV heap на все модели
     std::vector<Texture> m_textures;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_srvHeap;
     UINT m_srvHeapCapacity = 0;
@@ -250,5 +251,10 @@ private:
         D3D12_RESOURCE_STATES after);
 
     DirectX::XMFLOAT3 m_sunDirection = { 0.3f, -0.8f, 0.5f };
+
+    std::unique_ptr<TAASystem> m_taa;
+    DirectX::XMFLOAT4X4 m_prevViewProj;
+    DirectX::XMFLOAT3   m_prevCameraPos = { 0.0f, 0.0f, 0.0f };
+    bool                m_hasPrevFrame = false;
 
 };

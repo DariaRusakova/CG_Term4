@@ -13,7 +13,6 @@
 
 class RenderingSystem {
 public:
-    // ================== RenderData ==================
     struct RenderData {
         ID3D12Resource* vertexBuffer;
         ID3D12Resource* indexBuffer;
@@ -34,11 +33,10 @@ public:
         DirectX::XMFLOAT4   lightDirection = {};
     };
 
-    // ============== Константы визуализации света ==============
     struct alignas(256) LightVisConstants  {
         DirectX::XMFLOAT4X4 viewProj;
-        DirectX::XMFLOAT4   lightPos;    // xyz = world pos, w = radius
-        DirectX::XMFLOAT4   lightColor;  // rgb = color, a = intensity
+        DirectX::XMFLOAT4   lightPos;    
+        DirectX::XMFLOAT4   lightColor;  
     };
 
     RenderingSystem();
@@ -59,9 +57,8 @@ public:
     void AddLight(const Light& light);
     void ClearLights();
 
-    static constexpr UINT kMaxProjectiles = 16;   // = lights[16] в шейдере
+    static constexpr UINT kMaxProjectiles = 16; 
 
-    // Spawn снаряда из точки origin в направлении dir
     bool SpawnProjectile(const DirectX::XMFLOAT3& origin,
         const DirectX::XMFLOAT3& dir,
         const DirectX::XMFLOAT4& color = { 1.0f, 0.6f, 0.2f, 1.0f },
@@ -71,31 +68,54 @@ public:
         float range = 10.0f,
         float lifetime = 3.0f);
 
-    // Управление глобальной интенсивностью (только запоминает множитель)
     void SetGlobalIntensity(float intensity) { m_globalIntensity = intensity; }
     bool IsIBLReady() const { return m_iblReady; }
 
-    // Обновление (двигает снаряды, пересобирает m_lights)
     void Update(float deltaTime);
     void CreateIBLResources(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList);
+
+    ID3D12Resource* GetLightingColorResource() const {
+        return m_lightingColor.Get();
+    }
+    D3D12_CPU_DESCRIPTOR_HANDLE GetLightingColorSRV() const {
+        return m_lightingSRVCPU;
+    }
+    D3D12_GPU_DESCRIPTOR_HANDLE GetLightingColorGPUSRV() const {
+        return m_lightingSRVGPU;
+    }
+    void BlitToBackBuffer(ID3D12GraphicsCommandList* cmdList,
+        D3D12_CPU_DESCRIPTOR_HANDLE backBufferRTV,
+        D3D12_GPU_DESCRIPTOR_HANDLE sourceSRVGPU);
+
+    void EnsureHistorySRVs(ID3D12Device* device,
+        ID3D12Resource* history0,
+        ID3D12Resource* history1);
+
+    D3D12_GPU_DESCRIPTOR_HANDLE GetLightingColorSRVGPUHandle() const {
+        return m_lightingSRVGPU;
+    }
+    D3D12_GPU_DESCRIPTOR_HANDLE GetGbufferSrvHeapGPUStart() const {
+        return m_gbufferSrvHeap->GetGPUDescriptorHandleForHeapStart();
+    }
+    ID3D12DescriptorHeap* GetGbufferSrvHeap() const {
+        return m_gbufferSrvHeap.Get();
+    }
 
 private:
     void CreateLightBuffers(ID3D12Device* device);
     void CreateFullscreenQuad(ID3D12Device* device);
     void CreateLightingPassPipeline(ID3D12Device* device);
-    void CreateLightVisPipeline(ID3D12Device* device);   // <-- объявление
+    void CreateLightVisPipeline(ID3D12Device* device);   
 
     void RenderLightGizmos(ID3D12GraphicsCommandList* cmdList,
         D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle,
         const DirectX::XMFLOAT4X4& viewProj);
 
-    // ============== Ресурсы визуализации света ==============
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_lightVisRootSig;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_lightVisPSO;
     Microsoft::WRL::ComPtr<ID3D12Resource>      m_lightVisCB;
     void* m_lightVisCBData = nullptr;
 
-    // ============== Ресурсы освещения ==============
     void* m_lightCBData = nullptr;
 
     float m_globalIntensity = 1.0f;
@@ -140,7 +160,6 @@ private:
     Projectile m_projectiles[kMaxProjectiles] = {};
     std::vector<Light> m_staticLights;
 
-    // ============== IBL-ресурсы ==============
     Microsoft::WRL::ComPtr<ID3D12Resource> m_irradianceMap;
     Microsoft::WRL::ComPtr<ID3D12Resource> m_prefilteredMap;
     Microsoft::WRL::ComPtr<ID3D12Resource> m_brdfLUT;
@@ -150,8 +169,24 @@ private:
     UINT m_srvDescriptorSize = 0;
     bool m_iblReady = false;
 
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_shadowMapSRVResource; // кэш
-    UINT m_shadowSrvSlot = 0;   // слот в m_gbufferSrvHeap
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_shadowMapSRVResource; 
+    UINT m_shadowSrvSlot = 0;   
 
     void EnsureShadowSRV(ID3D12Device* device, ID3D12Resource* shadowResource);
+
+    void CreateLightingColorTarget(ID3D12Device* device, UINT width, UINT height);
+
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_lightingColor;
+    D3D12_CPU_DESCRIPTOR_HANDLE m_lightingSRVCPU = {};
+    D3D12_GPU_DESCRIPTOR_HANDLE m_lightingSRVGPU = {};
+    D3D12_CPU_DESCRIPTOR_HANDLE m_lightingRTV = {};
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_lightingRTVHeap;
+
+    void CreateBlitPipeline(ID3D12Device* device);
+
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> m_blitRootSig;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_blitPSO;
+
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_historySRVResource[2];
+    bool m_historySRVCreated[2] = { false, false };
 };

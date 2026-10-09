@@ -5,14 +5,14 @@
 
 struct alignas(256) ShadowMapCB {
     DirectX::XMFLOAT4X4 lightViewProj[4];   
-    DirectX::XMFLOAT4   cascadeSplits;      
+    DirectX::XMFLOAT4   cascadeSplits;     
     DirectX::XMFLOAT4   lightDirection;
     DirectX::XMFLOAT4   shadowBias;
-    DirectX::XMFLOAT4   textureSize;     
+    DirectX::XMFLOAT4   textureSize;       
     DirectX::XMFLOAT4   cameraPos;
     DirectX::XMFLOAT4   lightPos;
     DirectX::XMFLOAT4   cameraForward;
-    int                 cascadeIndex;      
+    int                 cascadeIndex;       
     int                 _pad[3];
 };
 static_assert(sizeof(ShadowMapCB) % 256 == 0, "CB must be 256-aligned");

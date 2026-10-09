@@ -25,9 +25,8 @@ void RenderingSystem::Initialize(ID3D12Device* device, UINT width, UINT height) 
     rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
     device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&m_gbufferRtvHeap));
 
-    m_shadowSrvSlot = GBuffer::GB_COUNT + 3;   
-
-    const UINT kTotalDescriptors = GBuffer::GB_COUNT + 3 + 1; 
+    m_shadowSrvSlot = GBuffer::GB_COUNT + 3;  
+    const UINT kTotalDescriptors = GBuffer::GB_COUNT + 3 + 1 + 1 + 2;  
 
     D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
     srvHeapDesc.NumDescriptors = kTotalDescriptors;
@@ -56,7 +55,9 @@ void RenderingSystem::Initialize(ID3D12Device* device, UINT width, UINT height) 
     CreateLightBuffers(device);
     CreateFullscreenQuad(device);
     CreateLightingPassPipeline(device);
+    CreateLightingColorTarget(device, width, height);
     CreateLightVisPipeline(device);
+    CreateBlitPipeline(device);
 
     ClearLights();
 
@@ -552,6 +553,7 @@ float3 IBL(float3 N, float3 V, float3 albedo, float roughness, float metallic) {
     return kD * albedo * irradiance + specular;
 }
 
+// ==== Тени ====
 int SelectCascade(float viewDepth) {
     if (viewDepth < cascadeSplits.x) return 0;
     if (viewDepth < cascadeSplits.y) return 1;
@@ -663,6 +665,7 @@ for (uint i = 0; i < lightCount; i++) {
 
     Lo += CookTorrance(N, V, L, radiance, albedo, roughness, metallic) * shadow;
 }
+
     float ambientShadow = 1.0;
     if (lightCount > 0 && (uint)lights[0].position_type.w == 1) {
         float viewDepthA = length(worldPos.xyz - cameraPos.xyz);
@@ -677,24 +680,14 @@ for (uint i = 0; i < lightCount; i++) {
     float3 color = ambient + Lo;
 
     if (dot(worldPos.xyz, worldPos.xyz) < 0.0001) {
-        float2 uv = position.xy / float2(1024.0, 768.0);   // хардкод разрешения
+        float2 uv = position.xy / float2(1024.0, 768.0);  
         float3 skyTop    = float3(0.15, 0.20, 0.30);
         float3 skyBottom = float3(0.03, 0.03, 0.05);
         float3 bg = lerp(skyBottom, skyTop, 1.0 - uv.y);
         color = bg;
     }
 
-    const float a = 2.51;
-    const float b = 0.03;
-    const float c = 2.43;
-    const float d = 0.59;
-    const float e = 0.14;
-    float3 mapped = saturate((color * (a * color + b)) /
-                             (color * (c * color + d) + e));
-
-    float3 gamma = pow(mapped, float3(1.0 / 2.2, 1.0 / 2.2, 1.0 / 2.2));
-
-    return float4(gamma, 1.0);
+    return float4(color, 1.0);
 }
 )";
 
@@ -776,7 +769,7 @@ for (uint i = 0; i < lightCount; i++) {
     ibSampler.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
     ibSampler.MinLOD = 0;
     ibSampler.MaxLOD = D3D12_FLOAT32_MAX;
-    ibSampler.ShaderRegister = 1;   // ← важно: s1, а не s0
+    ibSampler.ShaderRegister = 1;   
     ibSampler.RegisterSpace = 0;
     ibSampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
@@ -791,7 +784,7 @@ for (uint i = 0; i < lightCount; i++) {
     shadowCmpSampler.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
     shadowCmpSampler.MinLOD = 0;
     shadowCmpSampler.MaxLOD = 0;
-    shadowCmpSampler.ShaderRegister = 2;   // s2
+    shadowCmpSampler.ShaderRegister = 2;   
     shadowCmpSampler.RegisterSpace = 0;
     shadowCmpSampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
@@ -806,7 +799,7 @@ for (uint i = 0; i < lightCount; i++) {
     depthReadSampler.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
     depthReadSampler.MinLOD = 0;
     depthReadSampler.MaxLOD = 0;
-    depthReadSampler.ShaderRegister = 3;   // s3
+    depthReadSampler.ShaderRegister = 3;   
     depthReadSampler.RegisterSpace = 0;
     depthReadSampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
@@ -874,13 +867,12 @@ for (uint i = 0; i < lightCount; i++) {
     psoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
 
     psoDesc.SampleMask = UINT_MAX;
-    psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;  // Исправлено с TRIANGLESTRIP на TRIANGLE
+    psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;  
     psoDesc.NumRenderTargets = 1;
-    psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+    psoDesc.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
     psoDesc.DSVFormat = DXGI_FORMAT_UNKNOWN;
     psoDesc.SampleDesc.Count = 1;
     psoDesc.SampleDesc.Quality = 0;
-    //psoDesc.NodeMask = 1;
     psoDesc.CachedPSO.CachedBlobSizeInBytes = 0;
     psoDesc.CachedPSO.pCachedBlob = nullptr;
     psoDesc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
@@ -909,7 +901,6 @@ void RenderingSystem::Render(ID3D12GraphicsCommandList* cmdList,
         return;
     }
 
-    // ==== Обновление light CB ====
     memset(m_lightCBData, 0, 1536);
     LightBufferGPU* lightData = reinterpret_cast<LightBufferGPU*>(m_lightCBData);
     lightData->lightCount = std::min((UINT)m_lights.size(), 16u);
@@ -945,6 +936,16 @@ void RenderingSystem::Render(ID3D12GraphicsCommandList* cmdList,
     {
         ID3D12DescriptorHeap* modelHeaps[] = { objects[0].modelSrvHeap };
         cmdList->SetDescriptorHeaps(_countof(modelHeaps), modelHeaps);
+    }
+
+    {
+        D3D12_RESOURCE_BARRIER b = {};
+        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b.Transition.pResource = m_lightingColor.Get();
+        b.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        cmdList->ResourceBarrier(1, &b);
     }
 
     cmdList->SetGraphicsRootSignature(geometryRootSig);
@@ -1026,7 +1027,9 @@ void RenderingSystem::Render(ID3D12GraphicsCommandList* cmdList,
 
     cmdList->SetGraphicsRootSignature(m_lightingRootSig.Get());
     cmdList->SetPipelineState(m_lightingPSO.Get());
-    cmdList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
+
+    D3D12_CPU_DESCRIPTOR_HANDLE lightingRTV = m_lightingRTV;
+    cmdList->OMSetRenderTargets(1, &lightingRTV, FALSE, nullptr);
 
     ID3D12DescriptorHeap* heaps[] = { m_gbufferSrvHeap.Get() };
     cmdList->SetDescriptorHeaps(_countof(heaps), heaps);
@@ -1035,11 +1038,9 @@ void RenderingSystem::Render(ID3D12GraphicsCommandList* cmdList,
         m_gbufferSrvHeap->GetGPUDescriptorHandleForHeapStart();
     cmdList->SetGraphicsRootDescriptorTable(0, gbufferGpuHandle);
 
-    // CBV света
     cmdList->SetGraphicsRootConstantBufferView(
         1, m_lightConstantBuffer->GetGPUVirtualAddress());
 
-    // IBL SRV — t4..t6 (offset = GB_COUNT дескрипторов от начала)
     if (m_iblReady) {
         D3D12_GPU_DESCRIPTOR_HANDLE iblGpuHandle;
         iblGpuHandle.ptr = gbufferGpuHandle.ptr +
@@ -1057,8 +1058,21 @@ void RenderingSystem::Render(ID3D12GraphicsCommandList* cmdList,
     cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
     cmdList->DrawInstanced(4, 1, 0, 0);
 
-    RenderLightGizmos(cmdList, rtvHandle, objects[0].viewProj);
+    // Gizmos (если есть живые снаряды)
+    RenderLightGizmos(cmdList, m_lightingRTV, objects[0].viewProj);
 
+
+    {
+        D3D12_RESOURCE_BARRIER b = {};
+        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b.Transition.pResource = m_lightingColor.Get();
+        b.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        b.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        cmdList->ResourceBarrier(1, &b);
+    }
+
+    // Возвращаем GBuffer в RENDER_TARGET для следующего кадра
     for (int i = 0; i < GBuffer::GB_COUNT; ++i) {
         barriers[i].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         barriers[i].Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
@@ -1190,7 +1204,7 @@ void RenderingSystem::CreateLightVisPipeline(ID3D12Device* device) {
     pso.InputLayout = { nullptr, 0 };  // процедурные вершины
     pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     pso.NumRenderTargets = 1;
-    pso.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+    pso.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
     pso.DSVFormat = DXGI_FORMAT_UNKNOWN;
     pso.SampleDesc.Count = 1;
     pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
@@ -1362,4 +1376,256 @@ void RenderingSystem::EnsureShadowSRV(ID3D12Device* device,
     char buf[128];
     sprintf_s(buf, "[RS] Shadow SRV created at slot %u\n", m_shadowSrvSlot);
     OutputDebugStringA(buf);
+}
+
+void RenderingSystem::CreateLightingColorTarget(ID3D12Device* device,
+    UINT width, UINT height) {
+    m_lightingColor.Reset();
+
+    D3D12_HEAP_PROPERTIES heapProps = {};
+    heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+    D3D12_RESOURCE_DESC desc = {};
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    desc.Width = width;
+    desc.Height = height;
+    desc.DepthOrArraySize = 1;
+    desc.MipLevels = 1;
+    desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    desc.SampleDesc.Count = 1;
+    desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+
+    D3D12_CLEAR_VALUE clearValue = {};
+    clearValue.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    clearValue.Color[3] = 1.0f;
+
+    HRESULT hr = device->CreateCommittedResource(
+        &heapProps, D3D12_HEAP_FLAG_NONE, &desc,
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clearValue,
+        IID_PPV_ARGS(&m_lightingColor));
+    if (FAILED(hr)) throw std::runtime_error("Create lightingColor failed");
+
+    D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
+    rtvHeapDesc.NumDescriptors = 1;
+    rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&m_lightingRTVHeap));
+    m_lightingRTV = m_lightingRTVHeap->GetCPUDescriptorHandleForHeapStart();
+    device->CreateRenderTargetView(m_lightingColor.Get(), nullptr, m_lightingRTV);
+
+    const UINT lightingSlot = 8;
+
+    D3D12_CPU_DESCRIPTOR_HANDLE h =
+        m_gbufferSrvHeap->GetCPUDescriptorHandleForHeapStart();
+    h.ptr += (UINT64)lightingSlot * m_srvDescriptorSize;
+    m_lightingSRVCPU = h;
+
+    D3D12_GPU_DESCRIPTOR_HANDLE gh =
+        m_gbufferSrvHeap->GetGPUDescriptorHandleForHeapStart();
+    gh.ptr += (UINT64)lightingSlot * m_srvDescriptorSize;
+    m_lightingSRVGPU = gh;
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    srvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srvDesc.Texture2D.MipLevels = 1;
+    srvDesc.Texture2D.MostDetailedMip = 0;
+
+    device->CreateShaderResourceView(m_lightingColor.Get(), &srvDesc, h);
+
+    OutputDebugStringA("[RS] lightingColor offscreen RT created (slot 8)\n");
+}
+
+
+
+void RenderingSystem::CreateBlitPipeline(ID3D12Device* device) {
+    static const char* vsCode = R"(
+        struct VSInput {
+            float3 position : POSITION;
+            float2 texcoord : TEXCOORD;
+        };
+        struct VSOutput {
+            float4 position : SV_POSITION;
+            float2 texcoord : TEXCOORD;
+        };
+        VSOutput main(VSInput input) {
+            VSOutput o;
+            o.position = float4(input.position, 1.0);
+            o.texcoord = input.texcoord;
+            return o;
+        }
+    )";
+
+    static const char* psCode = R"(
+        Texture2D<float4> SourceHDR : register(t0);
+        SamplerState LinearClamp    : register(s0);
+
+        float4 main(float4 pos : SV_POSITION) : SV_TARGET {
+            float2 uv = pos.xy / float2(1024.0, 768.0);
+            float3 color = SourceHDR.SampleLevel(LinearClamp, uv, 0).rgb;
+
+            // ACES Filmic tonemap (Narkowicz approximation)
+            const float a = 2.51;
+            const float b = 0.03;
+            const float c = 2.43;
+            const float d = 0.59;
+            const float e = 0.14;
+            float3 mapped = saturate((color * (a * color + b)) /
+                                     (color * (c * color + d) + e));
+
+            // Gamma 2.2
+            float3 gamma = pow(mapped, float3(1.0/2.2, 1.0/2.2, 1.0/2.2));
+            return float4(gamma, 1.0);
+        }
+    )";
+
+    ComPtr<ID3DBlob> vs, ps, err;
+    HRESULT hr = D3DCompile(vsCode, strlen(vsCode), "BlitVS",
+        nullptr, nullptr, "main", "vs_5_0", 0, 0, &vs, &err);
+    if (FAILED(hr)) {
+        if (err) OutputDebugStringA((char*)err->GetBufferPointer());
+        throw std::runtime_error("Blit VS compile failed");
+    }
+
+    hr = D3DCompile(psCode, strlen(psCode), "BlitPS",
+        nullptr, nullptr, "main", "ps_5_0", 0, 0, &ps, &err);
+    if (FAILED(hr)) {
+        if (err) OutputDebugStringA((char*)err->GetBufferPointer());
+        throw std::runtime_error("Blit PS compile failed");
+    }
+
+    D3D12_DESCRIPTOR_RANGE srvRange = {};
+    srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    srvRange.NumDescriptors = 1;
+    srvRange.BaseShaderRegister = 0;
+    srvRange.RegisterSpace = 0;
+    srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    D3D12_ROOT_PARAMETER rp = {};
+    rp.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rp.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    rp.DescriptorTable.NumDescriptorRanges = 1;
+    rp.DescriptorTable.pDescriptorRanges = &srvRange;
+
+    D3D12_STATIC_SAMPLER_DESC samp = {};
+    samp.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    samp.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    samp.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    samp.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    samp.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+    samp.MinLOD = 0;
+    samp.MaxLOD = D3D12_FLOAT32_MAX;
+    samp.ShaderRegister = 0;
+    samp.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+    rsDesc.NumParameters = 1;
+    rsDesc.pParameters = &rp;
+    rsDesc.NumStaticSamplers = 1;
+    rsDesc.pStaticSamplers = &samp;
+    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+    ComPtr<ID3DBlob> sig;
+    hr = D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1,
+        &sig, &err);
+    if (FAILED(hr)) {
+        if (err) OutputDebugStringA((char*)err->GetBufferPointer());
+        throw std::runtime_error("Blit RS serialize failed");
+    }
+    hr = device->CreateRootSignature(0, sig->GetBufferPointer(),
+        sig->GetBufferSize(), IID_PPV_ARGS(&m_blitRootSig));
+    if (FAILED(hr)) throw std::runtime_error("Blit RS create failed");
+
+    D3D12_INPUT_ELEMENT_DESC inputDesc[] = {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,
+          D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 12,
+          D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
+    };
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
+    pso.InputLayout = { inputDesc, _countof(inputDesc) };
+    pso.pRootSignature = m_blitRootSig.Get();
+    pso.VS = { vs->GetBufferPointer(), vs->GetBufferSize() };
+    pso.PS = { ps->GetBufferPointer(), ps->GetBufferSize() };
+    pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    pso.RasterizerState.DepthClipEnable = TRUE;
+    pso.DepthStencilState.DepthEnable = FALSE;
+    pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+    pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+    pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    pso.SampleMask = UINT_MAX;
+    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pso.NumRenderTargets = 1;
+    pso.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+    pso.DSVFormat = DXGI_FORMAT_UNKNOWN;
+    pso.SampleDesc.Count = 1;
+
+    hr = device->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_blitPSO));
+    if (FAILED(hr)) throw std::runtime_error("Blit PSO create failed");
+}
+
+void RenderingSystem::BlitToBackBuffer(ID3D12GraphicsCommandList* cmdList,
+    D3D12_CPU_DESCRIPTOR_HANDLE backBufferRTV,
+    D3D12_GPU_DESCRIPTOR_HANDLE sourceSRVGPU)
+{
+    if (!m_blitPSO || !m_blitRootSig) return;
+
+    cmdList->SetGraphicsRootSignature(m_blitRootSig.Get());
+    cmdList->SetPipelineState(m_blitPSO.Get());
+
+    ID3D12DescriptorHeap* heaps[] = { m_gbufferSrvHeap.Get() };
+    cmdList->SetDescriptorHeaps(_countof(heaps), heaps);
+
+    cmdList->SetGraphicsRootDescriptorTable(0, sourceSRVGPU);
+
+    cmdList->OMSetRenderTargets(1, &backBufferRTV, FALSE, nullptr);
+
+    D3D12_VIEWPORT vp = { 0.0f, 0.0f, (float)m_width, (float)m_height, 0.0f, 1.0f };
+    D3D12_RECT sc = { 0, 0, (LONG)m_width, (LONG)m_height };
+    cmdList->RSSetViewports(1, &vp);
+    cmdList->RSSetScissorRects(1, &sc);
+
+    cmdList->IASetVertexBuffers(0, 1, &m_fullscreenVBView);
+    cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+    cmdList->DrawInstanced(4, 1, 0, 0);
+}
+
+
+void RenderingSystem::EnsureHistorySRVs(ID3D12Device* device,
+    ID3D12Resource* history0,
+    ID3D12Resource* history1) {
+    ID3D12Resource* resources[2] = { history0, history1 };
+    const UINT slots[2] = { 9, 10 };
+
+    for (int i = 0; i < 2; ++i) {
+        if (!resources[i]) continue;
+        if (m_historySRVCreated[i] &&
+            m_historySRVResource[i].Get() == resources[i]) {
+            continue;
+        }
+
+        m_historySRVResource[i] = resources[i];
+        m_historySRVCreated[i] = true;
+
+        D3D12_CPU_DESCRIPTOR_HANDLE h =
+            m_gbufferSrvHeap->GetCPUDescriptorHandleForHeapStart();
+        h.ptr += (UINT64)slots[i] * m_srvDescriptorSize;
+
+        D3D12_SHADER_RESOURCE_VIEW_DESC sd = {};
+        sd.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        sd.Texture2D.MipLevels = 1;
+        sd.Texture2D.MostDetailedMip = 0;
+
+        device->CreateShaderResourceView(resources[i], &sd, h);
+
+        char buf[128];
+        sprintf_s(buf, "[RS] History SRV created at slot %u\n", slots[i]);
+        OutputDebugStringA(buf);
+    }
 }

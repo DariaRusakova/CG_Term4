@@ -1,18 +1,18 @@
 #pragma once
 #include <DirectXMath.h>
 #include <algorithm>
+using namespace DirectX;
 
 class Camera {
 public:
     Camera();
 
     void Update(float aspectRatio);
-    void Rotate(int dx, int dy);       
-    void Zoom(float amount);          
+    void Rotate(int dx, int dy);
+    void Zoom(float amount);
     void Reset();
 
     void Move(float forward, float right, float up);
-
     void MoveAlongForward(float amount);
 
     const DirectX::XMMATRIX& GetViewMatrix() const { return m_view; }
@@ -38,17 +38,39 @@ public:
         return t;
     }
 
-    float GetDistance() const { return 0.0f; }   
+    float GetDistance() const { return 0.0f; }
+
+    void SetJitter(float jitterNdcX, float jitterNdcY) {
+        m_jitterX = jitterNdcX;
+        m_jitterY = jitterNdcY;
+        RecalculateProjection();
+    }
+    void ClearJitter() {
+        m_jitterX = 0.0f;
+        m_jitterY = 0.0f;
+        RecalculateProjection();
+    }
+
+    DirectX::XMMATRIX GetProjectionMatrixNoJitter() const {
+        return DirectX::XMMatrixPerspectiveFovLH(
+            DirectX::XM_PIDIV4, m_aspect, 0.1f, 10000.0f);
+    }
 
 private:
     void Recalculate();
+    void RecalculateProjection();
 
     DirectX::XMFLOAT3 m_position = { 0.0f, 400.0f, 1200.0f };
-    float m_yaw = 0.0f;                
-    float m_pitch = -0.3f;              
+    float m_yaw = 0.0f;
+    float m_pitch = -0.3f;
     float m_rotateSpeed = 0.0025f;
     float m_minPitch = -DirectX::XM_PIDIV2 + 0.1f;
     float m_maxPitch = DirectX::XM_PIDIV2 - 0.1f;
+
+    float m_aspect = 1024.0f / 768.0f;
+
+    float m_jitterX = 0.0f;
+    float m_jitterY = 0.0f;
 
     DirectX::XMMATRIX m_view;
     DirectX::XMMATRIX m_proj;

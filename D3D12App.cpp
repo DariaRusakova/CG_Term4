@@ -36,13 +36,19 @@ D3D12App::~D3D12App() {
 void D3D12App::Shutdown() {
     OutputDebugStringA("[Shutdown] entering\n");
 
+    WaitForGpu();
+
+    if (m_taa) {
+        m_taa->Release();
+        m_taa.reset();
+    }
+
     if (m_quadRoot) {
         DestroyQuadTree(m_quadRoot);
         m_quadRoot = nullptr;
         m_terrainMeshCount = 0;
     }
 
-    WaitForGpu();
     if (m_fenceEvent) CloseHandle(m_fenceEvent);
 
     for (uint32_t f = 0; f < kFrameCount; ++f) {
@@ -466,7 +472,7 @@ bool D3D12App::Initialize(HWND hwnd) {
             }
         }
 
-       
+        
 
         if (m_objects.empty()) {
             OutputDebugStringA("[Scene] No models loaded\n");
@@ -492,6 +498,11 @@ bool D3D12App::Initialize(HWND hwnd) {
         CreateShadowPassRootSignature();
         CreateShadowPassPipelineState();
         OutputDebugStringA("[Shadow] ShadowMapSystem initialized\n");
+
+        m_taa = std::make_unique<TAASystem>();
+        m_taa->Initialize(m_device.Get(), kWidth, kHeight);
+        m_taa->SetEnabled(false); 
+        OutputDebugStringA("[TAA] System ready (toggle: F8)\n");
 
         m_sunDirection = XMFLOAT3(0.6f, -0.25f, 0.4f);
 
@@ -677,9 +688,13 @@ void D3D12App::RenderFrame() {
         ThrowIfFailed(m_commandAllocators[m_frameIndex]->Reset());
         ThrowIfFailed(m_commandList->Reset(m_commandAllocators[m_frameIndex].Get(), nullptr));
 
+        if (m_taa) {
+            XMFLOAT2 jitter = m_taa->GetJitterOffset(m_frameIndex);
+            m_camera.SetJitter(jitter.x, jitter.y);
+        }
+
         UpdateConstantBuffer(m_frameIndex);
 
-        // Тени каскад
         {
             XMFLOAT3 camFwd = m_camera.GetForward();
             float fovY = XM_PIDIV4;
@@ -744,7 +759,6 @@ void D3D12App::RenderFrame() {
             rd.viewProj = viewProjF;
             rd.cameraPos = cameraPos;
 
-            // Тени
             rd.shadowMapResource = m_shadowMap->GetDepthResource();
             const ShadowMapCB& smcb = m_shadowMap->GetConstantBufferData();
             for (int i = 0; i < 4; ++i)
@@ -827,7 +841,7 @@ void D3D12App::RenderFrame() {
         if (deltaTime > 0.1f) deltaTime = 0.1f;
 
         {
-            float moveSpeed = 500.0f;   // единиц/сек
+            float moveSpeed = 500.0f;   
 
             if (GetAsyncKeyState(VK_SHIFT) & 0x8000) {
                 moveSpeed *= 3.0f;
@@ -870,15 +884,16 @@ void D3D12App::RenderFrame() {
             s_smoothedDt = s_smoothedDt * 0.95f + deltaTime * 0.05f;
             float fps = 1.0f / std::max(0.0001f, s_smoothedDt);
             sprintf_s(title,
-                "Terrain LOD - total: %u   terrain nodes visible: %u   culled: %u   FPS: %.1f",
-                m_terrainMeshCount + 2, 
+                "Terrain LOD - total: %u   terrain nodes visible: %u   "
+                "culled: %u   TAA: %s   FPS: %.1f",
+                m_terrainMeshCount + 2,
                 terrainVisible,
                 culledCount,
+                IsTAAEnabled() ? "ON" : "OFF",
                 fps);
             SetWindowTextA(m_hwnd, title);
         }
 
-        // deferred rendering
         m_renderingSystem->Render(
             m_commandList.Get(),
             m_depthStencil.Get(),
@@ -890,9 +905,46 @@ void D3D12App::RenderFrame() {
             (UINT)renderData.size()
         );
 
-        barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-        barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-        m_commandList->ResourceBarrier(1, &barrier);
+        D3D12_GPU_DESCRIPTOR_HANDLE sourceSRV =
+            m_renderingSystem->GetLightingColorSRVGPUHandle();
+
+        if (m_taa && m_taa->IsEnabled()) {
+            m_renderingSystem->EnsureHistorySRVs(
+                m_device.Get(),
+                m_taa->GetHistoryResource(0),
+                m_taa->GetHistoryResource(1));
+
+            D3D12_GPU_DESCRIPTOR_HANDLE gpuStart =
+                m_renderingSystem->GetGbufferSrvHeapGPUStart();
+            UINT srvSize = m_srvDescriptorSize;   
+
+            D3D12_GPU_DESCRIPTOR_HANDLE hist0 = gpuStart;
+            hist0.ptr += (UINT64)9 * m_srvDescriptorSize;
+            D3D12_GPU_DESCRIPTOR_HANDLE hist1 = gpuStart;
+            hist1.ptr += (UINT64)10 * m_srvDescriptorSize;
+
+            m_taa->SetHistorySRVSlots(hist0, hist1);
+
+            m_taa->Resolve(m_commandList.Get(),
+                m_renderingSystem->GetGbufferSrvHeap(),
+                m_renderingSystem->GetLightingColorSRVGPUHandle());
+
+            sourceSRV = m_taa->GetHistorySRVGPU(
+                m_taa->GetCurrentHistoryIndex());
+        }
+
+        {
+            m_renderingSystem->BlitToBackBuffer(
+                m_commandList.Get(), rtvHandle, sourceSRV);
+
+            D3D12_RESOURCE_BARRIER b = {};
+            b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            b.Transition.pResource = m_renderTargets[m_frameIndex].Get();
+            b.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+            b.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+            b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            m_commandList->ResourceBarrier(1, &b);
+        }
 
         ThrowIfFailed(m_commandList->Close());
 
@@ -902,12 +954,23 @@ void D3D12App::RenderFrame() {
         m_swapChain->Present(1, 0);
         SignalFrame();
 
+        if (m_taa) {
+            XMMATRIX viewNoJitter = m_camera.GetViewMatrix();
+            XMMATRIX projNoJitter = m_camera.GetProjectionMatrixNoJitter();
+
+            XMFLOAT4X4 vpNoJitter;
+            XMStoreFloat4x4(&vpNoJitter, viewNoJitter * projNoJitter);
+
+            XMFLOAT3 camPos = m_camera.GetPosition();
+            m_taa->SavePrevFrame(vpNoJitter, camPos);
+
+            m_taa->MarkHistoryValid();
+        }
     }
     catch (std::exception& e) {
         OutputDebugStringA(e.what());
     }
 }
-
 
 
 void D3D12App::WaitForPreviousFrame() {
@@ -990,12 +1053,15 @@ void D3D12App::OnKeyDown(WPARAM wParam) {
     case '0':
         m_lightIntensity = 1.0f;
         break;
+    case 'T':
+        ToggleTAA();
+        break;
     case VK_SPACE: {
         if (m_shootCooldown > 0.0f) break;
 
         XMFLOAT3 camPos = m_camera.GetPosition();
 
-        const float aimHeight = 2.0f;   
+        const float aimHeight = 2.0f;     
         XMFLOAT3 aimPoint = { 0.0f, aimHeight, 0.0f };
 
         XMFLOAT3 toAim = {
@@ -1008,7 +1074,7 @@ void D3D12App::OnKeyDown(WPARAM wParam) {
         XMStoreFloat3(&dir, dirV);
 
         const float spawnForward = 1.0f;    
-        const float spawnUp = 0.3f;  
+        const float spawnUp = 0.3f;   
 
         XMFLOAT3 spawn = {
             camPos.x + dir.x * spawnForward,
@@ -1041,6 +1107,8 @@ void D3D12App::OnKeyUp(WPARAM wParam) {
 
 void D3D12App::ResetCamera() {
     m_camera.Reset();
+    if (m_taa) m_taa->InvalidateHistory();
+    m_hasPrevFrame = false;
     OutputDebugStringA("Camera reset\n");
 }
 
@@ -1826,7 +1894,6 @@ void D3D12App::TraverseQuadTree(
     }
 }
 
-//тени
 
 void D3D12App::CreateShadowPassRootSignature() {
     D3D12_ROOT_PARAMETER params[2];
@@ -1902,7 +1969,7 @@ void D3D12App::CreateShadowPassPipelineState() {
     pso.RasterizerState.DepthClipEnable = TRUE;
 
     pso.RasterizerState.DepthBias = 0;
-    pso.RasterizerState.SlopeScaledDepthBias = 3.0f;   
+    pso.RasterizerState.SlopeScaledDepthBias = 3.0f;  
     pso.RasterizerState.DepthBiasClamp = 0.0f;
 
     pso.DepthStencilState.DepthEnable = TRUE;
@@ -2006,4 +2073,21 @@ void D3D12App::RenderShadowPass(ID3D12GraphicsCommandList* cmdList) {
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_DEPTH_WRITE;
     barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
     cmdList->ResourceBarrier(1, &barrier);
+}
+
+
+void D3D12App::ToggleTAA() {
+    if (!m_taa) return;
+
+    m_taa->SetEnabled(!m_taa->IsEnabled());
+    m_taa->InvalidateHistory();
+    m_hasPrevFrame = false;
+
+    char buf[64];
+    sprintf_s(buf, "[TAA] %s\n", m_taa->IsEnabled() ? "ON" : "OFF");
+    OutputDebugStringA(buf);
+}
+
+bool D3D12App::IsTAAEnabled() const {
+    return m_taa && m_taa->IsEnabled();
 }
