@@ -16,6 +16,7 @@
 #include "Terrain/Frustum.h"
 #include "Terrain/TerrainConfig.h"
 #include "Terrain/QuadNode.h"
+#include "Shadows/ShadowMap.h"
 
 
 struct alignas(256) SceneConstantBuffer {
@@ -236,5 +237,18 @@ private:
         UINT& outVisibleCount);
 
     UINT m_terrainMeshCount = 0;
+
+    std::unique_ptr<ShadowMapSystem> m_shadowMap;
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> m_shadowRootSignature;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_shadowPSO;
+
+    void CreateShadowPassRootSignature();
+    void CreateShadowPassPipelineState();
+    void RenderShadowPass(ID3D12GraphicsCommandList* cmdList);
+    void TransitionShadowMap(ID3D12GraphicsCommandList* cmdList,
+        D3D12_RESOURCE_STATES before,
+        D3D12_RESOURCE_STATES after);
+
+    DirectX::XMFLOAT3 m_sunDirection = { 0.3f, -0.8f, 0.5f };
 
 };

@@ -27,6 +27,11 @@ public:
         const Material* materials;
         DirectX::XMFLOAT4X4 viewProj;
         DirectX::XMFLOAT3 cameraPos;
+
+        ID3D12Resource* shadowMapResource = nullptr;
+        DirectX::XMFLOAT4X4 lightViewProj[4] = {};
+        DirectX::XMFLOAT4   cascadeSplits = {};
+        DirectX::XMFLOAT4   lightDirection = {};
     };
 
     // ============== Константы визуализации света ==============
@@ -105,6 +110,7 @@ private:
 
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_gbufferSrvHeap;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_gbufferRtvHeap;
+    Microsoft::WRL::ComPtr<ID3D12Device> m_device;
 
     std::unique_ptr<GBuffer> m_gbuffer;
     std::vector<Light> m_lights;
@@ -124,6 +130,9 @@ private:
         UINT   lightCount;
         float  padding[3];
         DirectX::XMFLOAT4 cameraPos;
+        DirectX::XMFLOAT4X4 lightViewProj[4];
+        DirectX::XMFLOAT4 cascadeSplits;
+        DirectX::XMFLOAT4 lightDirection;
     };
 
     void RebuildLightsFromProjectiles();
@@ -140,4 +149,9 @@ private:
     std::vector<std::unique_ptr<uint8_t[]>> m_iblDdsData;
     UINT m_srvDescriptorSize = 0;
     bool m_iblReady = false;
+
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_shadowMapSRVResource; // кэш
+    UINT m_shadowSrvSlot = 0;   // слот в m_gbufferSrvHeap
+
+    void EnsureShadowSRV(ID3D12Device* device, ID3D12Resource* shadowResource);
 };

@@ -17,26 +17,27 @@ RenderingSystem::~RenderingSystem() { OutputDebugStringA("[RS] destroying\n");  
 void RenderingSystem::Initialize(ID3D12Device* device, UINT width, UINT height) {
     m_width = width;
     m_height = height;
+    m_device = device; 
 
-    // Создаем кучи дескрипторов для GBuffer
     D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
     rtvHeapDesc.NumDescriptors = GBuffer::GB_COUNT;
     rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
     rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-    //rtvHeapDesc.NodeMask = 1;
     device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&m_gbufferRtvHeap));
 
+    m_shadowSrvSlot = GBuffer::GB_COUNT + 3;   
+
+    const UINT kTotalDescriptors = GBuffer::GB_COUNT + 3 + 1; 
+
     D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
-    srvHeapDesc.NumDescriptors = GBuffer::GB_COUNT + 16 + 3;  // +3 для IBL
+    srvHeapDesc.NumDescriptors = kTotalDescriptors;
     srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-    //srvHeapDesc.NodeMask = 1;
     device->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&m_gbufferSrvHeap));
-    
-    
+
     char buf[256];
-    sprintf_s(buf, "[RS] gbufferSrvHeap created, NumDescriptors=%u\n",
-        (unsigned)srvHeapDesc.NumDescriptors);
+    sprintf_s(buf, "[RS] gbufferSrvHeap created, NumDescriptors=%u, shadowSlot=%u\n",
+        (unsigned)kTotalDescriptors, (unsigned)m_shadowSrvSlot);
     OutputDebugStringA(buf);
 
     UINT rtvSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
@@ -62,27 +63,27 @@ void RenderingSystem::Initialize(ID3D12Device* device, UINT width, UINT height) 
     //// Основной направленный свет (солнце) - теплый оттенок
     Light sunLight;
     sunLight.type = LightType::Directional;
-    sunLight.direction = XMFLOAT3(0.3f, -0.8f, 0.5f);  // Направление солнца
+    sunLight.direction = XMFLOAT3(0.6f, -0.25f, 0.4f);  // Направление солнца
     sunLight.color = XMFLOAT4(1.0f, 0.9f, 0.7f, 1.0f);  // Теплый солнечный цвет
-    sunLight.intensity = 0.8f;
+    sunLight.intensity = 2.5f;
     AddLight(sunLight);
 
 
-    Light sunLight2;
-    sunLight2.type = LightType::Directional;
-    sunLight2.direction = XMFLOAT3(-0.5f, -0.3f, -0.7f);
-    sunLight2.color = XMFLOAT4(0.8f, 0.9f, 1.0f, 1.0f);
-    sunLight2.intensity = 1.5f;
-    AddLight(sunLight2);
+    //Light sunLight2;
+    //sunLight2.type = LightType::Directional;
+    //sunLight2.direction = XMFLOAT3(-0.5f, -0.3f, -0.7f);
+    //sunLight2.color = XMFLOAT4(0.8f, 0.9f, 1.0f, 1.0f);
+    //sunLight2.intensity = 1.5f;
+    //AddLight(sunLight2);
 
     // Точечный свет в центре атриума (теплый)
-    Light centerLight;
-    centerLight.type = LightType::Point;
-    centerLight.position = XMFLOAT3(0.0f, 4.0f, 0.0f);
-    centerLight.color = XMFLOAT4(1.0f, 0.85f, 0.6f, 1.0f);
-    centerLight.intensity = 5.0f;
-    centerLight.range = 15.0f;
-    AddLight(centerLight);
+    //Light centerLight;
+    //centerLight.type = LightType::Point;
+    //centerLight.position = XMFLOAT3(0.0f, 4.0f, 0.0f);
+    //centerLight.color = XMFLOAT4(1.0f, 0.85f, 0.6f, 1.0f);
+    //centerLight.intensity = 5.0f;
+    //centerLight.range = 15.0f;
+    //AddLight(centerLight);
 
     //Light ambient;
     //ambient.type = LightType::Point;
@@ -344,9 +345,7 @@ void RenderingSystem::CreateLightBuffers(ID3D12Device* device) {
     cbDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
     cbDesc.Alignment = 0;
 
-    // ИСПРАВЛЕНИЕ: Используем размер структуры, которая соответствует шейдеру
-    // Убедитесь, что LightBufferGPU определена и её размер совпадает с cbuffer в шейдере
-    cbDesc.Width = sizeof(LightBufferGPU);
+    cbDesc.Width = 1536;
 
     cbDesc.Height = 1;
     cbDesc.DepthOrArraySize = 1;
@@ -453,6 +452,9 @@ Texture2D<float4> PBRTex          : register(t3);
 TextureCube       IrradianceMap   : register(t4);
 TextureCube       PrefilteredMap  : register(t5);
 Texture2D<float4> BRDF_LUT        : register(t6);
+Texture2DArray ShadowMap : register(t7);
+SamplerComparisonState ShadowSampler : register(s2);
+SamplerState DepthReadSampler : register(s3);
 
 SamplerState LinearSampler : register(s0);      // GBuffer (point)
 SamplerState IBLSampler    : register(s1);      // IBL (linear, для кубомапов)
@@ -466,9 +468,12 @@ struct LightData {
 
 cbuffer LightCB : register(b0) {
     LightData lights[16];
-    uint lightCount;
+    uint  lightCount;
     float3 padding;
     float4 cameraPos;
+    float4x4 lightViewProj[4];
+    float4 cascadeSplits;
+    float4 lightDirection;
 };
 
 static const float PI = 3.14159265359;
@@ -547,6 +552,69 @@ float3 IBL(float3 N, float3 V, float3 albedo, float roughness, float metallic) {
     return kD * albedo * irradiance + specular;
 }
 
+int SelectCascade(float viewDepth) {
+    if (viewDepth < cascadeSplits.x) return 0;
+    if (viewDepth < cascadeSplits.y) return 1;
+    if (viewDepth < cascadeSplits.z) return 2;
+    return 3;
+}
+
+float SampleShadowSingle(float3 worldPos, float3 N, float3 L, int cascadeIdx) {
+    float4 shadowPos = mul(float4(worldPos, 1.0), lightViewProj[cascadeIdx]);
+    float3 shadowCoords = shadowPos.xyz / shadowPos.w;
+    shadowCoords.x = shadowCoords.x * 0.5 + 0.5;
+    shadowCoords.y = -shadowCoords.y * 0.5 + 0.5;
+
+    if (shadowCoords.x < 0.0 || shadowCoords.x > 1.0 ||
+        shadowCoords.y < 0.0 || shadowCoords.y > 1.0 ||
+        shadowCoords.z < 0.0 || shadowCoords.z > 1.0)
+    {
+        return 1.0;
+    }
+
+    float cosTheta = saturate(dot(N, L));
+    float bias = max(0.002 * (1.0 - cosTheta), 0.001);
+
+    float shadowSum = 0.0;
+    float2 texelSize = 1.0 / float2(2048.0, 2048.0);
+
+    [unroll]
+    for (int x = -1; x <= 1; ++x) {
+        [unroll]
+        for (int y = -1; y <= 1; ++y) {
+            float2 offset = float2(x, y) * texelSize;
+            shadowSum += ShadowMap.SampleCmpLevelZero(
+                ShadowSampler,
+                float3(shadowCoords.xy + offset, (float)cascadeIdx),
+                shadowCoords.z - bias
+            );
+        }
+    }
+
+    return shadowSum / 9.0;
+}
+
+float SampleShadow(float3 worldPos, float3 N, float3 L, int cascadeIdx) {
+    if (cascadeIdx < 3) {
+        float viewDepth = length(worldPos.xyz - cameraPos.xyz);
+        
+        float splitStart = 0.0;
+        float splitEnd = 0.0;
+        if (cascadeIdx == 0) { splitStart = cascadeSplits.x * 0.9; splitEnd = cascadeSplits.x; }
+        if (cascadeIdx == 1) { splitStart = cascadeSplits.y * 0.9; splitEnd = cascadeSplits.y; }
+        if (cascadeIdx == 2) { splitStart = cascadeSplits.z * 0.9; splitEnd = cascadeSplits.z; }
+
+        if (viewDepth > splitStart && viewDepth < splitEnd) {
+            float t = (viewDepth - splitStart) / (splitEnd - splitStart);
+            float s0 = SampleShadowSingle(worldPos, N, L, cascadeIdx);
+            float s1 = SampleShadowSingle(worldPos, N, L, cascadeIdx + 1);
+            return lerp(s0, s1, t);
+        }
+    }
+
+    return SampleShadowSingle(worldPos, N, L, cascadeIdx);
+}
+
 float4 main(float4 position : SV_POSITION) : SV_TARGET {
     int3 texPos = int3(position.xy, 0);
 
@@ -565,35 +633,50 @@ float4 main(float4 position : SV_POSITION) : SV_TARGET {
 
     float3 Lo = float3(0.0, 0.0, 0.0);
 
-    for (uint i = 0; i < lightCount; i++) {
-        uint type = (uint)lights[i].position_type.w;
-        float3 L;
-        float attenuation = 1.0;
+for (uint i = 0; i < lightCount; i++) {
+    uint type = (uint)lights[i].position_type.w;
+    float3 L;
+    float attenuation = 1.0;
 
-        if (type == 1) {
-            L = normalize(-lights[i].direction.xyz);
+    float shadow = 1.0;
+    if (type == 1) {
+        L = normalize(-lights[i].direction.xyz);
+
+        if (i == 0) {
+            float viewDepth = length(worldPos.xyz - cameraPos.xyz);
+            int cascade = SelectCascade(viewDepth);
+            shadow = SampleShadow(worldPos.xyz, N, L, cascade);
         }
-        else {
-            float3 lightVec = lights[i].position_type.xyz - worldPos.xyz;
-            float dist = length(lightVec);
-            L = lightVec / dist;
-            attenuation = saturate(1.0 - dist / lights[i].range_spotAngle.x);
-            attenuation *= attenuation;
-        }
-
-        float3 radiance = lights[i].color_intensity.rgb *
-                          lights[i].color_intensity.a * attenuation;
-
-        Lo += CookTorrance(N, V, L, radiance, albedo, roughness, metallic);
+    }
+    else {
+        float3 lightVec = lights[i].position_type.xyz - worldPos.xyz;
+        float dist = length(lightVec);
+        L = lightVec / dist;
+        attenuation = saturate(1.0 - dist / lights[i].range_spotAngle.x);
+        attenuation *= attenuation;
     }
 
-    // ==== IBL ambient ====
-    float3 ambient = IBL(N, V, albedo, roughness, metallic) * ao;
+
+
+    float3 radiance = lights[i].color_intensity.rgb *
+                      lights[i].color_intensity.a * attenuation;
+
+    Lo += CookTorrance(N, V, L, radiance, albedo, roughness, metallic) * shadow;
+}
+    float ambientShadow = 1.0;
+    if (lightCount > 0 && (uint)lights[0].position_type.w == 1) {
+        float viewDepthA = length(worldPos.xyz - cameraPos.xyz);
+        int cascadeA = SelectCascade(viewDepthA);
+        float3 LA = normalize(-lights[0].direction.xyz);
+        ambientShadow = SampleShadow(worldPos.xyz, N, LA, cascadeA);
+    }
+
+    float ambientFactor = lerp(0.5, 1.0, ambientShadow);
+
+    float3 ambient = IBL(N, V, albedo, roughness, metallic) * ao * ambientFactor;
     float3 color = ambient + Lo;
 
-    // ==== Skybox (фон) ====
     if (dot(worldPos.xyz, worldPos.xyz) < 0.0001) {
-        // Мягкий градиент: сверху светлее, снизу темнее
         float2 uv = position.xy / float2(1024.0, 768.0);   // хардкод разрешения
         float3 skyTop    = float3(0.15, 0.20, 0.30);
         float3 skyBottom = float3(0.03, 0.03, 0.05);
@@ -601,7 +684,6 @@ float4 main(float4 position : SV_POSITION) : SV_TARGET {
         color = bg;
     }
 
-    // ACES Filmic tonemap (Narkowicz approximation)
     const float a = 2.51;
     const float b = 0.03;
     const float c = 2.43;
@@ -610,7 +692,6 @@ float4 main(float4 position : SV_POSITION) : SV_TARGET {
     float3 mapped = saturate((color * (a * color + b)) /
                              (color * (c * color + d) + e));
 
-    // Gamma 2.2
     float3 gamma = pow(mapped, float3(1.0 / 2.2, 1.0 / 2.2, 1.0 / 2.2));
 
     return float4(gamma, 1.0);
@@ -634,7 +715,6 @@ float4 main(float4 position : SV_POSITION) : SV_TARGET {
         throw std::runtime_error("Failed to compile lighting PS");
     }
 
-    // GBuffer SRV: t0..t3
     D3D12_DESCRIPTOR_RANGE gbufferRange = {};
     gbufferRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
     gbufferRange.NumDescriptors = 4;
@@ -642,10 +722,9 @@ float4 main(float4 position : SV_POSITION) : SV_TARGET {
     gbufferRange.RegisterSpace = 0;
     gbufferRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-    // IBL SRV: t4..t6
     D3D12_DESCRIPTOR_RANGE iblRange = {};
     iblRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    iblRange.NumDescriptors = 3;
+    iblRange.NumDescriptors = 4;
     iblRange.BaseShaderRegister = 4;
     iblRange.RegisterSpace = 0;
     iblRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
@@ -701,12 +780,44 @@ float4 main(float4 position : SV_POSITION) : SV_TARGET {
     ibSampler.RegisterSpace = 0;
     ibSampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
-    D3D12_STATIC_SAMPLER_DESC samplers[2] = { sampler, ibSampler };
+    D3D12_STATIC_SAMPLER_DESC shadowCmpSampler = {};
+    shadowCmpSampler.Filter = D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT;
+    shadowCmpSampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+    shadowCmpSampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+    shadowCmpSampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+    shadowCmpSampler.MipLODBias = 0;
+    shadowCmpSampler.MaxAnisotropy = 1;
+    shadowCmpSampler.ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+    shadowCmpSampler.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
+    shadowCmpSampler.MinLOD = 0;
+    shadowCmpSampler.MaxLOD = 0;
+    shadowCmpSampler.ShaderRegister = 2;   // s2
+    shadowCmpSampler.RegisterSpace = 0;
+    shadowCmpSampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_STATIC_SAMPLER_DESC depthReadSampler = {};
+    depthReadSampler.Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
+    depthReadSampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    depthReadSampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    depthReadSampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    depthReadSampler.MipLODBias = 0;
+    depthReadSampler.MaxAnisotropy = 1;
+    depthReadSampler.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+    depthReadSampler.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
+    depthReadSampler.MinLOD = 0;
+    depthReadSampler.MaxLOD = 0;
+    depthReadSampler.ShaderRegister = 3;   // s3
+    depthReadSampler.RegisterSpace = 0;
+    depthReadSampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_STATIC_SAMPLER_DESC samplers[4] = {
+        sampler, ibSampler, shadowCmpSampler, depthReadSampler
+    };
 
     D3D12_ROOT_SIGNATURE_DESC rootSigDesc = {};
     rootSigDesc.NumParameters = 3;
     rootSigDesc.pParameters = rootParams;
-    rootSigDesc.NumStaticSamplers = 2;
+    rootSigDesc.NumStaticSamplers = 4;
     rootSigDesc.pStaticSamplers = samplers;
     rootSigDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
@@ -799,7 +910,7 @@ void RenderingSystem::Render(ID3D12GraphicsCommandList* cmdList,
     }
 
     // ==== Обновление light CB ====
-    memset(m_lightCBData, 0, sizeof(LightBufferGPU));
+    memset(m_lightCBData, 0, 1536);
     LightBufferGPU* lightData = reinterpret_cast<LightBufferGPU*>(m_lightCBData);
     lightData->lightCount = std::min((UINT)m_lights.size(), 16u);
     for (UINT i = 0; i < lightData->lightCount; ++i) {
@@ -816,13 +927,21 @@ void RenderingSystem::Render(ID3D12GraphicsCommandList* cmdList,
         objects[0].cameraPos.z,
         1.0f);
 
-    // ==== GEOMETRY PASS ====
+
+    if (objects[0].shadowMapResource) {
+        EnsureShadowSRV(m_device.Get(), objects[0].shadowMapResource);
+
+        for (int i = 0; i < 4; ++i)
+            lightData->lightViewProj[i] = objects[0].lightViewProj[i];
+
+        lightData->cascadeSplits = objects[0].cascadeSplits;
+        lightData->lightDirection = objects[0].lightDirection;
+    }
+
     D3D12_CPU_DESCRIPTOR_HANDLE gbufferRTVs[GBuffer::GB_COUNT];
     for (int i = 0; i < GBuffer::GB_COUNT; ++i)
         gbufferRTVs[i] = m_gbuffer->GetRTV((GBuffer::GBufferType)i);
 
-    // КРИТИЧНО: явно устанавливаем heap моделей для geometry pass.
-    // Он должен совпадать с тем, что используется в SetGraphicsRootDescriptorTable(1, ...).
     {
         ID3D12DescriptorHeap* modelHeaps[] = { objects[0].modelSrvHeap };
         cmdList->SetDescriptorHeaps(_countof(modelHeaps), modelHeaps);
@@ -832,7 +951,6 @@ void RenderingSystem::Render(ID3D12GraphicsCommandList* cmdList,
     cmdList->SetPipelineState(geometryPSO);
     cmdList->OMSetRenderTargets(GBuffer::GB_COUNT, gbufferRTVs, FALSE, &dsvHandle);
 
-    // Viewport/scissor — обязательно для geometry pass.
     D3D12_VIEWPORT vp = { 0.0f, 0.0f, (float)m_width, (float)m_height, 0.0f, 1.0f };
     D3D12_RECT sc = { 0, 0, (LONG)m_width, (LONG)m_height };
     cmdList->RSSetViewports(1, &vp);
@@ -895,8 +1013,6 @@ void RenderingSystem::Render(ID3D12GraphicsCommandList* cmdList,
         }
     }
 
-    // ==== LIGHTING PASS ====
-    // Барьер: GBuffer RENDER_TARGET → PIXEL_SHADER_RESOURCE
     D3D12_RESOURCE_BARRIER barriers[GBuffer::GB_COUNT];
     for (int i = 0; i < GBuffer::GB_COUNT; ++i) {
         barriers[i].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -912,11 +1028,9 @@ void RenderingSystem::Render(ID3D12GraphicsCommandList* cmdList,
     cmdList->SetPipelineState(m_lightingPSO.Get());
     cmdList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
 
-    // ОДИН heap: m_gbufferSrvHeap. IBL лежит сразу после GBuffer.
     ID3D12DescriptorHeap* heaps[] = { m_gbufferSrvHeap.Get() };
     cmdList->SetDescriptorHeaps(_countof(heaps), heaps);
 
-    // GBuffer SRV — t0..t3
     D3D12_GPU_DESCRIPTOR_HANDLE gbufferGpuHandle =
         m_gbufferSrvHeap->GetGPUDescriptorHandleForHeapStart();
     cmdList->SetGraphicsRootDescriptorTable(0, gbufferGpuHandle);
@@ -943,10 +1057,8 @@ void RenderingSystem::Render(ID3D12GraphicsCommandList* cmdList,
     cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
     cmdList->DrawInstanced(4, 1, 0, 0);
 
-    // Gizmos (если есть живые снаряды)
     RenderLightGizmos(cmdList, rtvHandle, objects[0].viewProj);
 
-    // Возвращаем GBuffer в RENDER_TARGET для следующего кадра
     for (int i = 0; i < GBuffer::GB_COUNT; ++i) {
         barriers[i].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         barriers[i].Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
@@ -1223,4 +1335,31 @@ void RenderingSystem::RebuildLightsFromProjectiles() {
         m_lights.resize(16);
         m_originalIntensities.resize(16);
     }
+}
+
+void RenderingSystem::EnsureShadowSRV(ID3D12Device* device,
+    ID3D12Resource* shadowResource) {
+    if (!shadowResource) return;
+    if (m_shadowMapSRVResource.Get() == shadowResource) return;
+
+    m_shadowMapSRVResource = shadowResource;
+
+    D3D12_CPU_DESCRIPTOR_HANDLE h =
+        m_gbufferSrvHeap->GetCPUDescriptorHandleForHeapStart();
+    h.ptr += (UINT64)m_shadowSrvSlot * m_srvDescriptorSize;
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC sd = {};
+    sd.Format = DXGI_FORMAT_R32_FLOAT;
+    sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+    sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    sd.Texture2DArray.MipLevels = 1;
+    sd.Texture2DArray.MostDetailedMip = 0;
+    sd.Texture2DArray.FirstArraySlice = 0;
+    sd.Texture2DArray.ArraySize = 4;  
+
+    device->CreateShaderResourceView(shadowResource, &sd, h);
+
+    char buf[128];
+    sprintf_s(buf, "[RS] Shadow SRV created at slot %u\n", m_shadowSrvSlot);
+    OutputDebugStringA(buf);
 }

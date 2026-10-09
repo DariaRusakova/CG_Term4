@@ -21,6 +21,7 @@ set(SOURCES
     Rendering/GBuffer.cpp
     Rendering/RenderingSystem.cpp
     Rendering/Light.cpp
+    Shadows/ShadowMap.cpp
     libs/DDSTextureLoader12.cpp
 )
 

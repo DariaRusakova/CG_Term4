@@ -82,11 +82,11 @@ static SceneObject CreateUVSphere(float radius, int segments, int rings) {
 
     for (int y = 0; y <= rings; ++y) {
         float v = (float)y / rings;
-        float phi = v * XM_PI;   
+        float phi = v * XM_PI;   // 0..PI
 
         for (int x = 0; x <= segments; ++x) {
             float u = (float)x / segments;
-            float theta = u * XM_2PI;  
+            float theta = u * XM_2PI;   // 0..2PI
 
             float px = radius * sinf(phi) * cosf(theta);
             float py = radius * cosf(phi);
@@ -393,7 +393,6 @@ bool D3D12App::Initialize(HWND hwnd) {
                 m_defaultWhiteTexIndex,   // [4] = white normal
             };
 
-           
 
             const UINT blockBase = m_srvHeapUsed;
 
@@ -452,8 +451,9 @@ bool D3D12App::Initialize(HWND hwnd) {
                 m_terrainConfig.tilesX,
                 0);
 
-            char buf[256];
-            sprintf_s(buf, "[QuadTree] Built %zu mesh nodes\n", m_objects.size());
+            char buf[128];
+            sprintf_s(buf, "[Scene] m_objects.size() = %zu, kMaxObjects = %u\n",
+                m_objects.size(), kMaxObjects);
             OutputDebugStringA(buf);
 
             m_terrainMeshCount = (UINT)m_objects.size();
@@ -466,47 +466,7 @@ bool D3D12App::Initialize(HWND hwnd) {
             }
         }
 
-        {
-            MaterialPaths paths;
-            paths.albedo = "assets/Cerberus_by_Andrew_Maximov/Textures/Cerberus_A.jpg";
-            paths.normal = "assets/Cerberus_by_Andrew_Maximov/Textures/Cerberus_N.jpg";
-            paths.roughness = "assets/Cerberus_by_Andrew_Maximov/Textures/Cerberus_R.jpg";
-            paths.metallic = "assets/Cerberus_by_Andrew_Maximov/Textures/Cerberus_M.jpg";
-            paths.ao = "";  
-
-            SceneObject cerberus;
-            XMFLOAT4X4 world;
-            XMStoreFloat4x4(&world, XMMatrixTranslation(-1.0f, 0.0f, 0.0f));
-
-            if (LoadSceneObject(
-                "assets/Cerberus_by_Andrew_Maximov/Cerberus_LP.obj",
-                "assets",
-                world, cerberus, paths))
-            {
-                m_objects.push_back(std::move(cerberus));
-            }
-        }
-
-        {
-            MaterialPaths paths;
-            paths.albedo = "assets/wood_root/Aset_wood_root_M_rkswd_2K_Albedo.jpg";
-            paths.normal = "assets/wood_root/Aset_wood_root_M_rkswd_2K_Normal_LOD0.jpg";
-            paths.roughness = "assets/wood_root/Aset_wood_root_M_rkswd_2K_Roughness.jpg";
-            paths.metallic = "";  
-            paths.ao = "";  
-
-            SceneObject woodRoot;
-            XMFLOAT4X4 world;
-            XMStoreFloat4x4(&world, XMMatrixTranslation(1.0f, 0.0f, 0.0f));
-
-            if (LoadSceneObject(
-                "assets/wood_root/Aset_wood_root_M_rkswd_LOD0.obj",
-                "assets",
-                world, woodRoot, paths))
-            {
-                m_objects.push_back(std::move(woodRoot));
-            }
-        }
+       
 
         if (m_objects.empty()) {
             OutputDebugStringA("[Scene] No models loaded\n");
@@ -526,6 +486,14 @@ bool D3D12App::Initialize(HWND hwnd) {
         }
 
         CreateConstantBuffers();
+
+        m_shadowMap = std::make_unique<ShadowMapSystem>();
+        m_shadowMap->Initialize(m_device.Get());
+        CreateShadowPassRootSignature();
+        CreateShadowPassPipelineState();
+        OutputDebugStringA("[Shadow] ShadowMapSystem initialized\n");
+
+        m_sunDirection = XMFLOAT3(0.6f, -0.25f, 0.4f);
 
         m_viewport = { 0.0f, 0.0f, (float)kWidth, (float)kHeight, 0.0f, 1.0f };
         m_scissorRect = { 0, 0, (LONG)kWidth, (LONG)kHeight };
@@ -575,7 +543,7 @@ void D3D12App::UpdateConstantBuffer(uint32_t frameIndex) {
             mat.roughnessFactor,
             mat.metallicFactor,
             mat.aoFactor,
-            obj.hasTextures ? 1.0f : 0.0f   
+            obj.hasTextures ? 1.0f : 0.0f    // ← .w = useMaterialTextures
         );
    
 
@@ -586,11 +554,13 @@ void D3D12App::UpdateConstantBuffer(uint32_t frameIndex) {
 void D3D12App::CreateGeometryPassRootSignature() {
     D3D12_ROOT_PARAMETER rootParams[2];
 
+    // CBV для константного буфера сцены
     rootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     rootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     rootParams[0].Descriptor.ShaderRegister = 0;
     rootParams[0].Descriptor.RegisterSpace = 0;
 
+    // Descriptor Table для текстур
     D3D12_DESCRIPTOR_RANGE descRange = {};
     descRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
     descRange.NumDescriptors = 5;
@@ -603,6 +573,7 @@ void D3D12App::CreateGeometryPassRootSignature() {
     rootParams[1].DescriptorTable.NumDescriptorRanges = 1;
     rootParams[1].DescriptorTable.pDescriptorRanges = &descRange;
 
+    // Статический сэмплер
     D3D12_STATIC_SAMPLER_DESC sampler = {};
     sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
     sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
@@ -708,6 +679,19 @@ void D3D12App::RenderFrame() {
 
         UpdateConstantBuffer(m_frameIndex);
 
+        // Тени каскад
+        {
+            XMFLOAT3 camFwd = m_camera.GetForward();
+            float fovY = XM_PIDIV4;
+            float aspect = (float)kWidth / (float)kHeight;
+            float nearZ = 0.1f;
+            float farZ = 10000.0f;
+
+            m_shadowMap->UpdateCascades(
+                m_sunDirection, cameraPos, camFwd,
+                fovY, aspect, nearZ, farZ);
+        }
+
         m_viewport = { 0.0f, 0.0f, (float)kWidth, (float)kHeight, 0.0f, 1.0f };
         m_scissorRect = { 0, 0, (LONG)kWidth, (LONG)kHeight };
 
@@ -759,6 +743,15 @@ void D3D12App::RenderFrame() {
             rd.materials = obj.materials.data();
             rd.viewProj = viewProjF;
             rd.cameraPos = cameraPos;
+
+            // Тени
+            rd.shadowMapResource = m_shadowMap->GetDepthResource();
+            const ShadowMapCB& smcb = m_shadowMap->GetConstantBufferData();
+            for (int i = 0; i < 4; ++i)
+                rd.lightViewProj[i] = smcb.lightViewProj[i];
+            rd.cascadeSplits = smcb.cascadeSplits;
+            rd.lightDirection = smcb.lightDirection;
+
             renderData.push_back(rd);
             };
 
@@ -846,8 +839,8 @@ void D3D12App::RenderFrame() {
 
             if (m_keyW) forward += 1.0f;
             if (m_keyS) forward -= 1.0f;
-            if (m_keyD) right += 1.0f;
-            if (m_keyA) right -= 1.0f;
+            if (m_keyD) right -= 1.0f;
+            if (m_keyA) right += 1.0f;
             if (m_keyE) up += 1.0f;
             if (m_keyQ) up -= 1.0f;
 
@@ -868,6 +861,8 @@ void D3D12App::RenderFrame() {
         m_renderingSystem->Update(deltaTime);
         m_renderingSystem->SetGlobalIntensity(m_lightIntensity);
 
+        RenderShadowPass(m_commandList.Get());
+
 
         if (m_hwnd) {
             char title[256];
@@ -883,6 +878,7 @@ void D3D12App::RenderFrame() {
             SetWindowTextA(m_hwnd, title);
         }
 
+        // deferred rendering
         m_renderingSystem->Render(
             m_commandList.Get(),
             m_depthStencil.Get(),
@@ -999,7 +995,7 @@ void D3D12App::OnKeyDown(WPARAM wParam) {
 
         XMFLOAT3 camPos = m_camera.GetPosition();
 
-        const float aimHeight = 2.0f;     
+        const float aimHeight = 2.0f;   
         XMFLOAT3 aimPoint = { 0.0f, aimHeight, 0.0f };
 
         XMFLOAT3 toAim = {
@@ -1011,8 +1007,8 @@ void D3D12App::OnKeyDown(WPARAM wParam) {
         XMFLOAT3 dir;
         XMStoreFloat3(&dir, dirV);
 
-        const float spawnForward = 1.0f;   
-        const float spawnUp = 0.3f;    
+        const float spawnForward = 1.0f;    
+        const float spawnUp = 0.3f;  
 
         XMFLOAT3 spawn = {
             camPos.x + dir.x * spawnForward,
@@ -1828,4 +1824,186 @@ void D3D12App::TraverseQuadTree(
             outVisibleCount++;
         }
     }
+}
+
+//тени
+
+void D3D12App::CreateShadowPassRootSignature() {
+    D3D12_ROOT_PARAMETER params[2];
+
+    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    params[0].Descriptor.ShaderRegister = 0;
+    params[0].Descriptor.RegisterSpace = 0;
+
+    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    params[1].Descriptor.ShaderRegister = 1;
+    params[1].Descriptor.RegisterSpace = 0;
+
+    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+    rsDesc.NumParameters = 2;
+    rsDesc.pParameters = params;
+    rsDesc.NumStaticSamplers = 0;
+    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+        | D3D12_ROOT_SIGNATURE_FLAG_DENY_PIXEL_SHADER_ROOT_ACCESS;
+
+    ComPtr<ID3DBlob> sig, err;
+    HRESULT hr = D3D12SerializeRootSignature(&rsDesc,
+        D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err);
+    if (FAILED(hr)) {
+        if (err) OutputDebugStringA((char*)err->GetBufferPointer());
+        ThrowIfFailed(hr, "Serialize shadow RS");
+    }
+    ThrowIfFailed(m_device->CreateRootSignature(0,
+        sig->GetBufferPointer(), sig->GetBufferSize(),
+        IID_PPV_ARGS(&m_shadowRootSignature)), "Create shadow RS");
+}
+
+void D3D12App::CreateShadowPassPipelineState() {
+    ComPtr<ID3DBlob> vs, ps, err;
+    UINT flags = 0;
+#ifdef _DEBUG
+    flags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+#endif
+
+    HRESULT hr = D3DCompile(ShadowShaders::VS, strlen(ShadowShaders::VS),
+        "ShadowVS", nullptr, nullptr, "main", "vs_5_0", flags, 0, &vs, &err);
+    if (FAILED(hr)) {
+        if (err) OutputDebugStringA((char*)err->GetBufferPointer());
+        ThrowIfFailed(hr, "Compile shadow VS");
+    }
+
+    hr = D3DCompile(ShadowShaders::PS, strlen(ShadowShaders::PS),
+        "ShadowPS", nullptr, nullptr, "main", "ps_5_0", flags, 0, &ps, &err);
+    if (FAILED(hr)) {
+        if (err) OutputDebugStringA((char*)err->GetBufferPointer());
+        ThrowIfFailed(hr, "Compile shadow PS");
+    }
+
+    D3D12_INPUT_ELEMENT_DESC inputDesc[] = {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,
+          D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12,
+          D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 24,
+          D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
+    };
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
+    pso.InputLayout = { inputDesc, _countof(inputDesc) };
+    pso.pRootSignature = m_shadowRootSignature.Get();
+    pso.VS = { vs->GetBufferPointer(), vs->GetBufferSize() };
+    pso.PS = { ps->GetBufferPointer(), ps->GetBufferSize() };
+
+    pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    pso.RasterizerState.FrontCounterClockwise = FALSE;
+    pso.RasterizerState.DepthClipEnable = TRUE;
+
+    pso.RasterizerState.DepthBias = 0;
+    pso.RasterizerState.SlopeScaledDepthBias = 3.0f;   
+    pso.RasterizerState.DepthBiasClamp = 0.0f;
+
+    pso.DepthStencilState.DepthEnable = TRUE;
+    pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
+    pso.DepthStencilState.StencilEnable = FALSE;
+
+    pso.NumRenderTargets = 0;
+    pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+    pso.SampleMask = UINT_MAX;
+    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pso.SampleDesc.Count = 1;
+
+    ThrowIfFailed(m_device->CreateGraphicsPipelineState(&pso,
+        IID_PPV_ARGS(&m_shadowPSO)), "Create shadow PSO");
+}
+
+void D3D12App::TransitionShadowMap(ID3D12GraphicsCommandList* cmdList,
+    D3D12_RESOURCE_STATES before,
+    D3D12_RESOURCE_STATES after) {
+    D3D12_RESOURCE_BARRIER b = {};
+    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    b.Transition.pResource = m_shadowMap->GetDepthResource();
+    b.Transition.StateBefore = before;
+    b.Transition.StateAfter = after;
+    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    cmdList->ResourceBarrier(1, &b);
+}
+
+void D3D12App::RenderShadowPass(ID3D12GraphicsCommandList* cmdList) {
+    if (!m_shadowMap || !m_shadowPSO || !m_shadowRootSignature) return;
+
+    if (m_objects.empty()) return;
+
+    ID3D12Resource* shadowResource = m_shadowMap->GetDepthResource();
+    if (!shadowResource) return;
+
+    D3D12_RESOURCE_BARRIER barrier = {};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.pResource = shadowResource;
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    cmdList->ResourceBarrier(1, &barrier);
+
+    cmdList->SetPipelineState(m_shadowPSO.Get());
+    cmdList->SetGraphicsRootSignature(m_shadowRootSignature.Get());
+
+    D3D12_VIEWPORT shadowViewport = {
+        0.0f, 0.0f,
+        (float)ShadowMapSystem::SHADOW_MAP_SIZE,
+        (float)ShadowMapSystem::SHADOW_MAP_SIZE,
+        0.0f, 1.0f
+    };
+    D3D12_RECT shadowScissor = {
+        0, 0,
+        (LONG)ShadowMapSystem::SHADOW_MAP_SIZE,
+        (LONG)ShadowMapSystem::SHADOW_MAP_SIZE
+    };
+    cmdList->RSSetViewports(1, &shadowViewport);
+    cmdList->RSSetScissorRects(1, &shadowScissor);
+
+    for (int cascade = 0; cascade < ShadowMapSystem::CASCADE_COUNT; ++cascade) {
+        D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = m_shadowMap->GetDSVForCascade(cascade);
+        if (dsvHandle.ptr == 0) continue;
+
+        cmdList->ClearDepthStencilView(dsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+        cmdList->OMSetRenderTargets(0, nullptr, FALSE, &dsvHandle);
+
+        cmdList->SetGraphicsRootConstantBufferView(0,
+            m_shadowMap->GetConstantBuffer(cascade)->GetGPUVirtualAddress());
+
+        for (size_t i = 0; i < m_objects.size(); ++i) {
+            const auto& obj = m_objects[i];
+            if (obj.indexCount == 0 || !obj.vertexBuffer || !obj.indexBuffer) continue;
+
+            if (i < kMaxObjects) {
+                cmdList->SetGraphicsRootConstantBufferView(1,
+                    m_constantBuffer[m_frameIndex][i]->GetGPUVirtualAddress());
+            }
+
+            cmdList->IASetVertexBuffers(0, 1, &obj.vbv);
+            cmdList->IASetIndexBuffer(&obj.ibv);
+            cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+            if (!obj.materialIndexCount.empty()) {
+                for (size_t m = 0; m < obj.materialIndexCount.size(); ++m) {
+                    if (obj.materialIndexCount[m] > 0) {
+                        cmdList->DrawIndexedInstanced(
+                            obj.materialIndexCount[m], 1, obj.materialStartIndex[m], 0, 0);
+                    }
+                }
+            }
+            else {
+                cmdList->DrawIndexedInstanced(obj.indexCount, 1, 0, 0, 0);
+            }
+        }
+    }
+
+
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    cmdList->ResourceBarrier(1, &barrier);
 }
