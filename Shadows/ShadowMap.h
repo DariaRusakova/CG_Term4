@@ -5,14 +5,14 @@
 
 struct alignas(256) ShadowMapCB {
     DirectX::XMFLOAT4X4 lightViewProj[4];   
-    DirectX::XMFLOAT4   cascadeSplits;     
+    DirectX::XMFLOAT4   cascadeSplits;      
     DirectX::XMFLOAT4   lightDirection;
     DirectX::XMFLOAT4   shadowBias;
     DirectX::XMFLOAT4   textureSize;       
     DirectX::XMFLOAT4   cameraPos;
     DirectX::XMFLOAT4   lightPos;
     DirectX::XMFLOAT4   cameraForward;
-    int                 cascadeIndex;       
+    int                 cascadeIndex;      
     int                 _pad[3];
 };
 static_assert(sizeof(ShadowMapCB) % 256 == 0, "CB must be 256-aligned");
@@ -96,7 +96,8 @@ namespace ShadowShaders {
             float2   obj_textureScale;
             float2   obj_textureOffset;
             float4   obj_materialFactor;
-            float4   obj_padding[2];
+            float4   obj_terrainAnim;   
+            float4   obj_padding[4];
         };
 
         struct VSInput {
@@ -107,6 +108,10 @@ namespace ShadowShaders {
 
         float4 main(VSInput input) : SV_POSITION {
             float4 localPos = float4(input.position, 1.0);
+            if (obj_terrainAnim.w > 0.5) {
+                localPos.y = localPos.y * obj_terrainAnim.x + obj_terrainAnim.y;
+            }
+
             float4 worldPos = mul(localPos, obj_world);
             return mul(worldPos, lightViewProj[cascadeIndex]);
         }

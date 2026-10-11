@@ -32,11 +32,12 @@ struct alignas(256) SceneConstantBuffer {
 
     DirectX::XMFLOAT4 materialFactor;
 
-    float padding[8];
+    DirectX::XMFLOAT4 terrainAnim;
+
+    float padding[4];
 };
 static_assert(sizeof(SceneConstantBuffer) == 256, "CB size mismatch");
 
-// Один объект сцены: свои буферы, свои материалы, своя world-матрица
 struct SceneObject {
     std::vector<Vertex>   vertices;
     std::vector<uint32_t> indices;
@@ -94,6 +95,10 @@ public:
 
     void ToggleTAA();        
     bool IsTAAEnabled() const;
+
+    void ToggleTerrainAnim();
+    bool IsTerrainAnimEnabled() const { return m_terrainAnimEnabled; }
+    float GetTotalTime() const { return m_totalTime; }
 
 private:
     static constexpr uint32_t kFrameCount = 2;
@@ -256,5 +261,8 @@ private:
     DirectX::XMFLOAT4X4 m_prevViewProj;
     DirectX::XMFLOAT3   m_prevCameraPos = { 0.0f, 0.0f, 0.0f };
     bool                m_hasPrevFrame = false;
+
+    float m_totalTime = 0.0f;
+    bool  m_terrainAnimEnabled = false;
 
 };

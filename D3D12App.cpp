@@ -472,7 +472,7 @@ bool D3D12App::Initialize(HWND hwnd) {
             }
         }
 
-        
+      
 
         if (m_objects.empty()) {
             OutputDebugStringA("[Scene] No models loaded\n");
@@ -557,6 +557,22 @@ void D3D12App::UpdateConstantBuffer(uint32_t frameIndex) {
             obj.hasTextures ? 1.0f : 0.0f    // ← .w = useMaterialTextures
         );
    
+        bool isTerrain = (o < m_terrainMeshCount);
+
+        if (isTerrain && m_terrainAnimEnabled) {
+            float heightModifier = 1.0f + 0.15f * sinf(m_totalTime * 0.5f);
+            float heightOffset = 40.0f * sinf(m_totalTime * 0.3f);
+
+            cb.terrainAnim = XMFLOAT4(
+                heightModifier,
+                heightOffset,
+                m_totalTime,
+                1.0f
+            );
+        }
+        else {
+            cb.terrainAnim = XMFLOAT4(1.0f, 0.0f, 0.0f, 0.0f);
+        }
 
         memcpy(m_cbvDataBegin[frameIndex][o], &cb, sizeof(SceneConstantBuffer));
     }
@@ -839,9 +855,10 @@ void D3D12App::RenderFrame() {
         last = now;
 
         if (deltaTime > 0.1f) deltaTime = 0.1f;
+        m_totalTime += deltaTime;
 
         {
-            float moveSpeed = 500.0f;   
+            float moveSpeed = 500.0f;  
 
             if (GetAsyncKeyState(VK_SHIFT) & 0x8000) {
                 moveSpeed *= 3.0f;
@@ -884,12 +901,13 @@ void D3D12App::RenderFrame() {
             s_smoothedDt = s_smoothedDt * 0.95f + deltaTime * 0.05f;
             float fps = 1.0f / std::max(0.0001f, s_smoothedDt);
             sprintf_s(title,
-                "Terrain LOD - total: %u   terrain nodes visible: %u   "
-                "culled: %u   TAA: %s   FPS: %.1f",
-                m_terrainMeshCount + 2,
+                "Terrain LOD - visible: %u   culled: %u   "
+                "TAA: %s   Anim: %s   T: %.1f   FPS: %.1f",
                 terrainVisible,
                 culledCount,
                 IsTAAEnabled() ? "ON" : "OFF",
+                IsTerrainAnimEnabled() ? "ON" : "OFF",
+                m_totalTime,
                 fps);
             SetWindowTextA(m_hwnd, title);
         }
@@ -916,7 +934,7 @@ void D3D12App::RenderFrame() {
 
             D3D12_GPU_DESCRIPTOR_HANDLE gpuStart =
                 m_renderingSystem->GetGbufferSrvHeapGPUStart();
-            UINT srvSize = m_srvDescriptorSize;   
+            UINT srvSize = m_srvDescriptorSize;  
 
             D3D12_GPU_DESCRIPTOR_HANDLE hist0 = gpuStart;
             hist0.ptr += (UINT64)9 * m_srvDescriptorSize;
@@ -971,6 +989,7 @@ void D3D12App::RenderFrame() {
         OutputDebugStringA(e.what());
     }
 }
+
 
 
 void D3D12App::WaitForPreviousFrame() {
@@ -1056,6 +1075,9 @@ void D3D12App::OnKeyDown(WPARAM wParam) {
     case 'T':
         ToggleTAA();
         break;
+    case 'G':
+        ToggleTerrainAnim();
+        break;
     case VK_SPACE: {
         if (m_shootCooldown > 0.0f) break;
 
@@ -1073,8 +1095,8 @@ void D3D12App::OnKeyDown(WPARAM wParam) {
         XMFLOAT3 dir;
         XMStoreFloat3(&dir, dirV);
 
-        const float spawnForward = 1.0f;    
-        const float spawnUp = 0.3f;   
+        const float spawnForward = 1.0f;  
+        const float spawnUp = 0.3f;  
 
         XMFLOAT3 spawn = {
             camPos.x + dir.x * spawnForward,
@@ -1152,7 +1174,7 @@ bool D3D12App::LoadSceneObject(const std::string& objPath,
             mat.aoSrv = o;
             mat.normalSrv = n;
 
-            mat.textureIndex = a;   
+            mat.textureIndex = a;  
 
             char buf[256];
             sprintf_s(buf, "[Material] '%s': base=%d (A=%d R=%d M=%d AO=%d N=%d)\n",
@@ -1785,11 +1807,22 @@ QuadNode* D3D12App::BuildQuadTree(
 
 
     {
+        const float maxModifier = 1.15f;
+        const float maxOffset = 40.0f;
+
         AABB worldBounds;
         for (const auto& v : mesh.vertices) {
             XMFLOAT3 wp;
             wp.x = v.position.x + centerWorldX;
-            wp.y = v.position.y;
+            wp.y = v.position.y * maxModifier + maxOffset;
+            wp.z = v.position.z + centerWorldZ;
+            worldBounds.Expand(wp);
+        }
+
+        for (const auto& v : mesh.vertices) {
+            XMFLOAT3 wp;
+            wp.x = v.position.x + centerWorldX;
+            wp.y = v.position.y - 50.0f; 
             wp.z = v.position.z + centerWorldZ;
             worldBounds.Expand(wp);
         }
@@ -1969,7 +2002,7 @@ void D3D12App::CreateShadowPassPipelineState() {
     pso.RasterizerState.DepthClipEnable = TRUE;
 
     pso.RasterizerState.DepthBias = 0;
-    pso.RasterizerState.SlopeScaledDepthBias = 3.0f;  
+    pso.RasterizerState.SlopeScaledDepthBias = 3.0f;   
     pso.RasterizerState.DepthBiasClamp = 0.0f;
 
     pso.DepthStencilState.DepthEnable = TRUE;
@@ -2075,7 +2108,6 @@ void D3D12App::RenderShadowPass(ID3D12GraphicsCommandList* cmdList) {
     cmdList->ResourceBarrier(1, &barrier);
 }
 
-
 void D3D12App::ToggleTAA() {
     if (!m_taa) return;
 
@@ -2090,4 +2122,12 @@ void D3D12App::ToggleTAA() {
 
 bool D3D12App::IsTAAEnabled() const {
     return m_taa && m_taa->IsEnabled();
+}
+
+
+void D3D12App::ToggleTerrainAnim() {
+    m_terrainAnimEnabled = !m_terrainAnimEnabled;
+    OutputDebugStringA(m_terrainAnimEnabled
+        ? "[Terrain] Anim ON\n"
+        : "[Terrain] Anim OFF\n");
 }

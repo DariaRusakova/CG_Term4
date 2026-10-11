@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 namespace Shaders {
     static const char* GeometryVS = R"(
@@ -10,8 +10,9 @@ namespace Shaders {
             float4 cameraPos;
             float2 textureScale;
             float2 textureOffset;
-            float4 materialFactor;   // .w = useMaterialTextures
-            float4 padding[2];
+            float4 materialFactor;  
+            float4 terrainAnim;      
+            float4 padding[4];
         }
 
         struct VSInput {
@@ -29,9 +30,14 @@ namespace Shaders {
 
         VSOutput main(VSInput input) {
             VSOutput output;
-            float4 worldPos = mul(float4(input.position, 1.0f), world);
+            float4 localPos = float4(input.position, 1.0f);
+            if (terrainAnim.w > 0.5) {
+                localPos.y = localPos.y * terrainAnim.x + terrainAnim.y;
+            }
+
+            float4 worldPos = mul(localPos, world);
             output.worldPos = worldPos.xyz;
-            output.position = mul(float4(input.position, 1.0f), worldViewProj);
+            output.position = mul(localPos, worldViewProj);
             output.normal = mul(float4(input.normal, 0.0f), world).xyz;
             output.texcoord = input.texcoord * textureScale + textureOffset;
             return output;
@@ -48,8 +54,9 @@ namespace Shaders {
             float4 cameraPos;
             float2 textureScale;
             float2 textureOffset;
-            float4 materialFactor;   // .w = useMaterialTextures
-            float4 padding[2];
+            float4 materialFactor;   
+            float4 terrainAnim;     
+            float4 padding[4];
         }
 
         struct PSInput {
@@ -78,7 +85,21 @@ namespace Shaders {
             PSOutput output;
 
             float4 texColor = AlbedoTexture.Sample(LinearSampler, input.texcoord);
-            output.albedo = float4(texColor.rgb, 1.0f);
+
+            
+            float3 tint = float3(1.0, 1.0, 1.0);
+            if (terrainAnim.w > 0.5) {
+                float t = terrainAnim.z; 
+
+                float phase = 0.4;      
+                tint.r = 0.5 + 0.5 * sin(t * phase);
+                tint.g = 0.5 + 0.5 * sin(t * phase + 2.094); 
+                tint.b = 0.5 + 0.5 * sin(t * phase + 4.189); 
+
+                tint = lerp(float3(1.0, 1.0, 1.0), tint, 0.4);
+            }
+
+            output.albedo = float4(texColor.rgb * tint, 1.0f);
             output.worldPos = float4(input.worldPos, 1.0f);
 
             float3 N = normalize(input.normal);
@@ -88,7 +109,6 @@ namespace Shaders {
             float roughness = RoughnessTexture.Sample(LinearSampler, input.texcoord).r;
             float metallic  = MetallicTexture.Sample(LinearSampler, input.texcoord).r;
             float ao        = AOTexture.Sample(LinearSampler, input.texcoord).r;
-
 
             if (materialFactor.w < 0.5) {
                 roughness = materialFactor.x;
