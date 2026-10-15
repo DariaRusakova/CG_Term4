@@ -56,6 +56,12 @@ public:
             DirectX::XM_PIDIV4, m_aspect, 0.1f, 10000.0f);
     }
 
+    void SaveCurrentAsPrev();
+
+    DirectX::XMMATRIX GetPrevViewMatrix() const { return m_prevView; }
+    DirectX::XMMATRIX GetPrevProjectionMatrix() const { return m_prevProj; }
+    DirectX::XMFLOAT3 GetPrevPosition() const { return m_prevPosition; }
+
 private:
     void Recalculate();
     void RecalculateProjection();
@@ -80,4 +86,8 @@ private:
     float m_maxDistance = 5000.0f;
     float m_zoomSpeed = 10.0f;
     DirectX::XMFLOAT3 m_target = { 0.0f, 150.0f, 0.0f };
+
+    DirectX::XMMATRIX m_prevView;
+    DirectX::XMMATRIX m_prevProj;
+    DirectX::XMFLOAT3 m_prevPosition = { 0.0f, 0.0f, 0.0f };
 };

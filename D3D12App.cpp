@@ -467,12 +467,13 @@ bool D3D12App::Initialize(HWND hwnd) {
             sprintf_s(buf, "[QuadTree] terrain mesh count = %u\n", m_terrainMeshCount);
             OutputDebugStringA(buf);
 
+            // Загружаем VB/IB для всех узлов дерева
             for (auto& obj : m_objects) {
                 if (!obj.vertices.empty()) CreateMeshBuffers(obj);
             }
         }
 
-      
+       
 
         if (m_objects.empty()) {
             OutputDebugStringA("[Scene] No models loaded\n");
@@ -481,6 +482,7 @@ bool D3D12App::Initialize(HWND hwnd) {
 
         m_renderingSystem->CreateIBLResources(m_device.Get(), m_commandList.Get());
 
+       
         ThrowIfFailed(m_commandList->Close());
         ID3D12CommandList* lists[] = { m_commandList.Get() };
         m_commandQueue->ExecuteCommandLists(1, lists);
@@ -529,46 +531,39 @@ void D3D12App::UpdateConstantBuffer(uint32_t frameIndex) {
 
     XMMATRIX view = m_camera.GetViewMatrix();
     XMMATRIX proj = m_camera.GetProjectionMatrix();
-    XMFLOAT3 cameraPos = m_camera.GetPosition();
+
+    XMMATRIX prevView = m_camera.GetPrevViewMatrix();
+    XMMATRIX prevProj = m_camera.GetPrevProjectionMatrix();
 
     for (UINT o = 0; o < (UINT)m_objects.size() && o < kMaxObjects; ++o) {
         XMMATRIX world = XMLoadFloat4x4(&m_objects[o].world);
         XMMATRIX wvp = world * view * proj;
+        XMMATRIX prevWvp = world * prevView * prevProj;
 
         auto& obj = m_objects[o];
         SceneConstantBuffer cb = {};
         XMStoreFloat4x4(&cb.worldViewProj, XMMatrixTranspose(wvp));
         XMStoreFloat4x4(&cb.world, XMMatrixTranspose(world));
-
-        cb.lightPos = XMFLOAT4(10.0f, 15.0f, -10.0f, 1.0f);
-        cb.lightColor = XMFLOAT4(1.0f, 0.95f, 0.8f, 1.0f);
-        cb.cameraPos = XMFLOAT4(cameraPos.x, cameraPos.y, cameraPos.z, 1.0f);
-
-
+        XMStoreFloat4x4(&cb.prevWorldViewProj, XMMatrixTranspose(prevWvp));
 
         cb.textureScale = XMFLOAT2(1.0f, 1.0f);
         cb.textureOffset = XMFLOAT2(0.0f, 0.0f);
+        cb.invResolution = XMFLOAT2(1.0f / kWidth, 1.0f / kHeight);
 
         const Material& mat = obj.materials.empty() ? Material{} : obj.materials[0];
         cb.materialFactor = XMFLOAT4(
             mat.roughnessFactor,
             mat.metallicFactor,
             mat.aoFactor,
-            obj.hasTextures ? 1.0f : 0.0f    // ← .w = useMaterialTextures
+            obj.hasTextures ? 1.0f : 0.0f
         );
-   
-        bool isTerrain = (o < m_terrainMeshCount);
 
+        bool isTerrain = (o < m_terrainMeshCount);
         if (isTerrain && m_terrainAnimEnabled) {
             float heightModifier = 1.0f + 0.15f * sinf(m_totalTime * 0.5f);
-            float heightOffset = 40.0f * sinf(m_totalTime * 0.3f);
-
-            cb.terrainAnim = XMFLOAT4(
-                heightModifier,
-                heightOffset,
-                m_totalTime,
-                1.0f
-            );
+            float heightOffset = 250.0f * sinf(m_totalTime * 0.3f);
+            cb.terrainAnim = XMFLOAT4(heightModifier, heightOffset,
+                m_totalTime, 1.0f);
         }
         else {
             cb.terrainAnim = XMFLOAT4(1.0f, 0.0f, 0.0f, 0.0f);
@@ -581,13 +576,11 @@ void D3D12App::UpdateConstantBuffer(uint32_t frameIndex) {
 void D3D12App::CreateGeometryPassRootSignature() {
     D3D12_ROOT_PARAMETER rootParams[2];
 
-    // CBV для константного буфера сцены
     rootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     rootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     rootParams[0].Descriptor.ShaderRegister = 0;
     rootParams[0].Descriptor.RegisterSpace = 0;
 
-    // Descriptor Table для текстур
     D3D12_DESCRIPTOR_RANGE descRange = {};
     descRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
     descRange.NumDescriptors = 5;
@@ -600,7 +593,6 @@ void D3D12App::CreateGeometryPassRootSignature() {
     rootParams[1].DescriptorTable.NumDescriptorRanges = 1;
     rootParams[1].DescriptorTable.pDescriptorRanges = &descRange;
 
-    // Статический сэмплер
     D3D12_STATIC_SAMPLER_DESC sampler = {};
     sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
     sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
@@ -679,15 +671,18 @@ void D3D12App::CreateGeometryPassPipelineState() {
     psoDesc.BlendState.RenderTarget[1].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
     psoDesc.BlendState.RenderTarget[2].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
     psoDesc.BlendState.RenderTarget[3].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    psoDesc.BlendState.RenderTarget[4].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
 
     psoDesc.SampleMask = UINT_MAX;
     psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    psoDesc.NumRenderTargets = 4; // Albedo, WorldPos, Normal, PBR
+    psoDesc.NumRenderTargets = 5;
 
     psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
     psoDesc.RTVFormats[1] = DXGI_FORMAT_R16G16B16A16_FLOAT;
     psoDesc.RTVFormats[2] = DXGI_FORMAT_R16G16B16A16_FLOAT;
     psoDesc.RTVFormats[3] = DXGI_FORMAT_R8G8B8A8_UNORM;
+    psoDesc.RTVFormats[4] = DXGI_FORMAT_R16G16_FLOAT;
+
     psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
     psoDesc.SampleDesc.Count = 1;
 
@@ -708,8 +703,6 @@ void D3D12App::RenderFrame() {
             XMFLOAT2 jitter = m_taa->GetJitterOffset(m_frameIndex);
             m_camera.SetJitter(jitter.x, jitter.y);
         }
-
-        UpdateConstantBuffer(m_frameIndex);
 
         {
             XMFLOAT3 camFwd = m_camera.GetForward();
@@ -858,7 +851,12 @@ void D3D12App::RenderFrame() {
         m_totalTime += deltaTime;
 
         {
-            float moveSpeed = 500.0f;  
+            if (m_keyR && !m_prevKeyR) {
+                ResetCamera();
+            }
+            m_prevKeyR = m_keyR;
+
+            float moveSpeed = 500.0f;   
 
             if (GetAsyncKeyState(VK_SHIFT) & 0x8000) {
                 moveSpeed *= 3.0f;
@@ -886,6 +884,8 @@ void D3D12App::RenderFrame() {
                 m_camera.Move(forward * dist, right * dist, up * dist);
             }
         }
+
+        UpdateConstantBuffer(m_frameIndex);
 
         m_shootCooldown = std::max(0.0f, m_shootCooldown - deltaTime);
 
@@ -934,18 +934,21 @@ void D3D12App::RenderFrame() {
 
             D3D12_GPU_DESCRIPTOR_HANDLE gpuStart =
                 m_renderingSystem->GetGbufferSrvHeapGPUStart();
-            UINT srvSize = m_srvDescriptorSize;  
 
             D3D12_GPU_DESCRIPTOR_HANDLE hist0 = gpuStart;
-            hist0.ptr += (UINT64)9 * m_srvDescriptorSize;
+            hist0.ptr += (UINT64)10 * m_srvDescriptorSize;
             D3D12_GPU_DESCRIPTOR_HANDLE hist1 = gpuStart;
-            hist1.ptr += (UINT64)10 * m_srvDescriptorSize;
+            hist1.ptr += (UINT64)11 * m_srvDescriptorSize;
 
             m_taa->SetHistorySRVSlots(hist0, hist1);
 
+            D3D12_GPU_DESCRIPTOR_HANDLE velocitySRV =
+                m_renderingSystem->GetVelocitySRVGPU();
+
             m_taa->Resolve(m_commandList.Get(),
                 m_renderingSystem->GetGbufferSrvHeap(),
-                m_renderingSystem->GetLightingColorSRVGPUHandle());
+                m_renderingSystem->GetLightingColorSRVGPUHandle(),
+                velocitySRV);
 
             sourceSRV = m_taa->GetHistorySRVGPU(
                 m_taa->GetCurrentHistoryIndex());
@@ -984,6 +987,7 @@ void D3D12App::RenderFrame() {
 
             m_taa->MarkHistoryValid();
         }
+        m_camera.SaveCurrentAsPrev();
     }
     catch (std::exception& e) {
         OutputDebugStringA(e.what());
@@ -1047,6 +1051,7 @@ void D3D12App::OnKeyDown(WPARAM wParam) {
     case 'D': m_keyD = true; break;
     case 'Q': m_keyQ = true; break;
     case 'E': m_keyE = true; break;
+    case 'R': m_keyR = true; break;
 
     case VK_UP:
         m_camera.Rotate(0, -10);
@@ -1083,7 +1088,7 @@ void D3D12App::OnKeyDown(WPARAM wParam) {
 
         XMFLOAT3 camPos = m_camera.GetPosition();
 
-        const float aimHeight = 2.0f;     
+        const float aimHeight = 2.0f;    
         XMFLOAT3 aimPoint = { 0.0f, aimHeight, 0.0f };
 
         XMFLOAT3 toAim = {
@@ -1095,8 +1100,8 @@ void D3D12App::OnKeyDown(WPARAM wParam) {
         XMFLOAT3 dir;
         XMStoreFloat3(&dir, dirV);
 
-        const float spawnForward = 1.0f;  
-        const float spawnUp = 0.3f;  
+        const float spawnForward = 1.0f;   
+        const float spawnUp = 0.3f;   
 
         XMFLOAT3 spawn = {
             camPos.x + dir.x * spawnForward,
@@ -1124,6 +1129,7 @@ void D3D12App::OnKeyUp(WPARAM wParam) {
     case 'D': m_keyD = false; break;
     case 'Q': m_keyQ = false; break;
     case 'E': m_keyE = false; break;
+    case 'R': m_keyR = false; break;
     }
 }
 
@@ -1822,7 +1828,7 @@ QuadNode* D3D12App::BuildQuadTree(
         for (const auto& v : mesh.vertices) {
             XMFLOAT3 wp;
             wp.x = v.position.x + centerWorldX;
-            wp.y = v.position.y - 50.0f; 
+            wp.y = v.position.y - 50.0f;  
             wp.z = v.position.z + centerWorldZ;
             worldBounds.Expand(wp);
         }
@@ -2002,7 +2008,7 @@ void D3D12App::CreateShadowPassPipelineState() {
     pso.RasterizerState.DepthClipEnable = TRUE;
 
     pso.RasterizerState.DepthBias = 0;
-    pso.RasterizerState.SlopeScaledDepthBias = 3.0f;   
+    pso.RasterizerState.SlopeScaledDepthBias = 3.0f;  
     pso.RasterizerState.DepthBiasClamp = 0.0f;
 
     pso.DepthStencilState.DepthEnable = TRUE;
@@ -2108,6 +2114,7 @@ void D3D12App::RenderShadowPass(ID3D12GraphicsCommandList* cmdList) {
     cmdList->ResourceBarrier(1, &barrier);
 }
 
+
 void D3D12App::ToggleTAA() {
     if (!m_taa) return;
 
@@ -2123,7 +2130,6 @@ void D3D12App::ToggleTAA() {
 bool D3D12App::IsTAAEnabled() const {
     return m_taa && m_taa->IsEnabled();
 }
-
 
 void D3D12App::ToggleTerrainAnim() {
     m_terrainAnimEnabled = !m_terrainAnimEnabled;

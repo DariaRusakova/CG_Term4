@@ -5,14 +5,14 @@
 
 struct alignas(256) ShadowMapCB {
     DirectX::XMFLOAT4X4 lightViewProj[4];   
-    DirectX::XMFLOAT4   cascadeSplits;      
+    DirectX::XMFLOAT4   cascadeSplits;    
     DirectX::XMFLOAT4   lightDirection;
     DirectX::XMFLOAT4   shadowBias;
     DirectX::XMFLOAT4   textureSize;       
     DirectX::XMFLOAT4   cameraPos;
     DirectX::XMFLOAT4   lightPos;
     DirectX::XMFLOAT4   cameraForward;
-    int                 cascadeIndex;      
+    int                 cascadeIndex;       
     int                 _pad[3];
 };
 static_assert(sizeof(ShadowMapCB) % 256 == 0, "CB must be 256-aligned");
@@ -86,18 +86,16 @@ namespace ShadowShaders {
             int3     _pad;
         };
 
-        // b1 = SceneConstantBuffer, но имена переименованы, чтобы не конфликтовать с ShadowCB
         cbuffer ObjectCB : register(b1) {
             float4x4 obj_worldViewProj;
             float4x4 obj_world;
-            float4   obj_lightPos;
-            float4   obj_lightColor;
-            float4   obj_cameraPos;
+            float4x4 obj_prevWorldViewProj;
             float2   obj_textureScale;
             float2   obj_textureOffset;
             float4   obj_materialFactor;
-            float4   obj_terrainAnim;   
-            float4   obj_padding[4];
+            float4   obj_terrainAnim;
+            float2   obj_invResolution;
+            float2   obj_padding;
         };
 
         struct VSInput {

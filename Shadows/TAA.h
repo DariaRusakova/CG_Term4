@@ -45,6 +45,7 @@ public:
 
     int GetCurrentHistoryIndex() const { return m_currentHistory; }
 
+
     ID3D12Resource* GetConstantBuffer() const { return m_cbResource.Get(); }
     TAACB* GetCBData() { return &m_cbData; }
     void            UploadCB();
@@ -54,7 +55,8 @@ public:
 
     void Resolve(ID3D12GraphicsCommandList* cmdList,
         ID3D12DescriptorHeap* srvHeap,
-        D3D12_GPU_DESCRIPTOR_HANDLE currentColorSRV);
+        D3D12_GPU_DESCRIPTOR_HANDLE currentColorSRV,
+        D3D12_GPU_DESCRIPTOR_HANDLE velocitySRV);
 
     void SetHistorySRVSlots(D3D12_GPU_DESCRIPTOR_HANDLE srv0,
         D3D12_GPU_DESCRIPTOR_HANDLE srv1) {
@@ -67,8 +69,10 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> m_cbResource;
     void* m_cbDataBegin = nullptr;
 
+
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_historyRtvHeap;
     D3D12_CPU_DESCRIPTOR_HANDLE m_historyRTV[2] = {};
+
 
     D3D12_GPU_DESCRIPTOR_HANDLE m_historySRVGPU[2] = {};
 

@@ -6,17 +6,19 @@ void GBuffer::Initialize(ID3D12Device* device, UINT width, UINT height) {
     m_height = height;
 
     DXGI_FORMAT formats[GB_COUNT] = {
-        DXGI_FORMAT_R8G8B8A8_UNORM,          // Albedo
-        DXGI_FORMAT_R16G16B16A16_FLOAT,      // World Pos
-        DXGI_FORMAT_R16G16B16A16_FLOAT,      // Normal
-        DXGI_FORMAT_R8G8B8A8_UNORM           // PBR (R=rough, G=metal, B=AO)
+        DXGI_FORMAT_R8G8B8A8_UNORM,
+        DXGI_FORMAT_R16G16B16A16_FLOAT,
+        DXGI_FORMAT_R16G16B16A16_FLOAT,
+        DXGI_FORMAT_R8G8B8A8_UNORM,
+        DXGI_FORMAT_R16G16_FLOAT    
     };
 
     D3D12_CLEAR_VALUE clearValues[GB_COUNT] = {
         { DXGI_FORMAT_R8G8B8A8_UNORM,     { 0.0f, 0.0f, 0.0f, 1.0f } },
         { DXGI_FORMAT_R16G16B16A16_FLOAT, { 0.0f, 0.0f, 0.0f, 1.0f } },
         { DXGI_FORMAT_R16G16B16A16_FLOAT, { 0.0f, 0.0f, 0.0f, 1.0f } },
-        { DXGI_FORMAT_R8G8B8A8_UNORM,     { 1.0f, 0.0f, 1.0f, 1.0f } }   // rough=1, metal=0, ao=1
+        { DXGI_FORMAT_R8G8B8A8_UNORM,     { 1.0f, 0.0f, 1.0f, 1.0f } },
+        { DXGI_FORMAT_R16G16_FLOAT,       { 0.0f, 0.0f, 0.0f, 1.0f } }
     };
 
     for (int i = 0; i < GB_COUNT; ++i) {
@@ -65,7 +67,8 @@ void GBuffer::CreateDescriptors(ID3D12Device* device,
         DXGI_FORMAT_R8G8B8A8_UNORM,
         DXGI_FORMAT_R16G16B16A16_FLOAT,
         DXGI_FORMAT_R16G16B16A16_FLOAT,
-        DXGI_FORMAT_R8G8B8A8_UNORM
+        DXGI_FORMAT_R8G8B8A8_UNORM,
+        DXGI_FORMAT_R16G16_FLOAT
     };
 
     for (int i = 0; i < GB_COUNT; ++i) {

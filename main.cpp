@@ -28,7 +28,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_KEYDOWN:
         if (app) {
             if (wParam == VK_ESCAPE) PostQuitMessage(0);
-            else if (wParam == 'R') app->ResetCamera();
             else app->OnKeyDown(wParam);
         }
         return 0;

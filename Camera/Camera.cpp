@@ -26,12 +26,24 @@ void Camera::Zoom(float) {
 
 void Camera::Reset() {
     m_position = { 0.0f, 800.0f, 1800.0f };
-    m_yaw = XM_PI;
-    m_pitch = -0.35f;
+
+    XMVECTOR pos = XMLoadFloat3(&m_position);
+    XMVECTOR target = XMVectorSet(0.0f, 0.0f, 0.0f, 1.0f);
+    XMVECTOR dir = XMVector3Normalize(target - pos);
+    XMFLOAT3 fwd;
+    XMStoreFloat3(&fwd, dir);
+
+    m_pitch = asinf(fwd.y);
+    m_yaw = atan2f(-fwd.x, -fwd.z);
+
     m_jitterX = 0.0f;
     m_jitterY = 0.0f;
     RecalculateProjection();
     Recalculate();
+
+    m_prevView = m_view;
+    m_prevProj = m_proj;
+    m_prevPosition = m_position;
 }
 
 XMFLOAT3 Camera::GetForward() const {
@@ -101,4 +113,10 @@ void Camera::Recalculate() {
     XMVECTOR up = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
 
     m_view = XMMatrixLookToLH(pos, fwd, up);
+}
+
+void Camera::SaveCurrentAsPrev() {
+    m_prevView = m_view;
+    m_prevProj = m_proj;
+    m_prevPosition = m_position;
 }

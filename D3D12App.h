@@ -20,21 +20,15 @@
 #include "Shadows/TAA.h"
 
 struct alignas(256) SceneConstantBuffer {
-    DirectX::XMFLOAT4X4 worldViewProj;
-    DirectX::XMFLOAT4X4 world;
-
-    DirectX::XMFLOAT4 lightPos;
-    DirectX::XMFLOAT4 lightColor;
-    DirectX::XMFLOAT4 cameraPos;
-
-    DirectX::XMFLOAT2 textureScale;
-    DirectX::XMFLOAT2 textureOffset;
-
-    DirectX::XMFLOAT4 materialFactor;
-
-    DirectX::XMFLOAT4 terrainAnim;
-
-    float padding[4];
+    DirectX::XMFLOAT4X4 worldViewProj;      
+    DirectX::XMFLOAT4X4 world;              
+    DirectX::XMFLOAT4X4 prevWorldViewProj;  
+    DirectX::XMFLOAT2 textureScale;         
+    DirectX::XMFLOAT2 textureOffset;        
+    DirectX::XMFLOAT4 materialFactor;       
+    DirectX::XMFLOAT4 terrainAnim;         
+    DirectX::XMFLOAT2 invResolution;       
+    float padding[2];  
 };
 static_assert(sizeof(SceneConstantBuffer) == 256, "CB size mismatch");
 
@@ -111,6 +105,8 @@ private:
     bool m_keyD = false;
     bool m_keyQ = false;
     bool m_keyE = false;
+    bool m_keyR = false;     
+    bool m_prevKeyR = false;
 
     void EnableDebugLayer();
     void CreateDevice();

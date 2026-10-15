@@ -6,10 +6,11 @@
 class GBuffer {
 public:
     enum GBufferType {
-        GB_ALBEDO = 0,       // R8G8B8A8_UNORM
-        GB_WORLD_POS,        // R16G16B16A16_FLOAT
-        GB_NORMAL,           // R16G16B16A16_FLOAT
-        GB_PBR,              // R8G8B8A8_UNORM: R=roughness, G=metallic, B=AO, A=unused
+        GB_ALBEDO = 0,
+        GB_WORLD_POS,
+        GB_NORMAL,
+        GB_PBR,
+        GB_VELOCITY,
         GB_COUNT
     };
 

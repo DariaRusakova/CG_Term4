@@ -31,8 +31,7 @@ namespace {
         return r;
     }
 
-}
-
+} 
 
 void TAASystem::Initialize(ID3D12Device* device, UINT width, UINT height) {
     if (!device) throw std::runtime_error("TAA: null device");
@@ -215,7 +214,7 @@ void TAASystem::CreateResolvePipeline(ID3D12Device* device) {
     static const char* psCode = R"(
         Texture2D<float4> CurrentColor : register(t0);
         Texture2D<float4> HistoryColor : register(t1);
-
+        Texture2D<float2> VelocityTex  : register(t2);
         SamplerState LinearClamp : register(s0);
 
         cbuffer TAACB : register(b0) {
@@ -229,25 +228,6 @@ void TAASystem::CreateResolvePipeline(ID3D12Device* device) {
             int      historyValid;
             float2   _pad;
         };
-
-        float2 ReprojectUV(float2 uv) {
-            float2 ndc = uv * 2.0 - 1.0;
-            ndc.y = -ndc.y;
-
-            float depth = 0.5;
-            float4 clip = float4(ndc, depth, 1.0);
-
-            float4 world = mul(clip, invViewProj);
-            world /= world.w;
-
-            float4 prevClip = mul(world, prevViewProj);
-            if (prevClip.w <= 1e-6) return uv;
-
-            float2 prevNdc = prevClip.xy / prevClip.w;
-            float2 prevUV  = prevNdc * 0.5 + 0.5;
-            prevUV.y = 1.0 - prevUV.y;
-            return prevUV;
-        }
 
         float4 ClipToAABB(float4 history, float2 uv) {
             float3 minC = float3( 1e9,  1e9,  1e9);
@@ -282,7 +262,9 @@ void TAASystem::CreateResolvePipeline(ID3D12Device* device) {
                 return current;
             }
 
-            float2 prevUV = ReprojectUV(uv);
+            float2 velocity = VelocityTex.SampleLevel(LinearClamp, uv, 0).rg;
+            float2 prevUV = uv - velocity;
+
             if (any(prevUV < 0.0) || any(prevUV > 1.0)) {
                 return current;
             }
@@ -310,7 +292,6 @@ void TAASystem::CreateResolvePipeline(ID3D12Device* device) {
         throw std::runtime_error("TAA resolve PS compile failed");
     }
 
-
     D3D12_DESCRIPTOR_RANGE rangeCurrent = {};
     rangeCurrent.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
     rangeCurrent.NumDescriptors = 1;
@@ -325,7 +306,14 @@ void TAASystem::CreateResolvePipeline(ID3D12Device* device) {
     rangeHistory.RegisterSpace = 0;
     rangeHistory.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-    D3D12_ROOT_PARAMETER params[3] = {};
+    D3D12_DESCRIPTOR_RANGE rangeVelocity = {};      
+    rangeVelocity.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    rangeVelocity.NumDescriptors = 1;
+    rangeVelocity.BaseShaderRegister = 2;       
+    rangeVelocity.RegisterSpace = 0;
+    rangeVelocity.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    D3D12_ROOT_PARAMETER params[4] = {};
 
     params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
@@ -340,7 +328,11 @@ void TAASystem::CreateResolvePipeline(ID3D12Device* device) {
     params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     params[2].Descriptor.ShaderRegister = 0;
-    params[2].Descriptor.RegisterSpace = 0;
+
+    params[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;  // НОВОЕ
+    params[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    params[3].DescriptorTable.NumDescriptorRanges = 1;
+    params[3].DescriptorTable.pDescriptorRanges = &rangeVelocity;
 
     D3D12_STATIC_SAMPLER_DESC sampler = {};
     sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
@@ -354,7 +346,7 @@ void TAASystem::CreateResolvePipeline(ID3D12Device* device) {
     sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-    rsDesc.NumParameters = 3;
+    rsDesc.NumParameters = 4;
     rsDesc.pParameters = params;
     rsDesc.NumStaticSamplers = 1;
     rsDesc.pStaticSamplers = &sampler;
@@ -404,7 +396,8 @@ void TAASystem::CreateResolvePipeline(ID3D12Device* device) {
 
 void TAASystem::Resolve(ID3D12GraphicsCommandList* cmdList,
     ID3D12DescriptorHeap* srvHeap,
-    D3D12_GPU_DESCRIPTOR_HANDLE currentColorSRV)
+    D3D12_GPU_DESCRIPTOR_HANDLE currentColorSRV,
+    D3D12_GPU_DESCRIPTOR_HANDLE velocitySRV)
 {
     if (!m_resolvePSO || !m_resolveRootSig) return;
     if (!srvHeap) return;
@@ -445,6 +438,8 @@ void TAASystem::Resolve(ID3D12GraphicsCommandList* cmdList,
     cmdList->SetGraphicsRootDescriptorTable(0, currentColorSRV);
 
     cmdList->SetGraphicsRootDescriptorTable(1, m_historySRVGPU[srcIdx]);
+
+    cmdList->SetGraphicsRootDescriptorTable(3, velocitySRV);
 
     cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     cmdList->DrawInstanced(3, 1, 0, 0);

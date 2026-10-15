@@ -33,10 +33,11 @@ public:
         DirectX::XMFLOAT4   lightDirection = {};
     };
 
+    
     struct alignas(256) LightVisConstants  {
         DirectX::XMFLOAT4X4 viewProj;
-        DirectX::XMFLOAT4   lightPos;    
-        DirectX::XMFLOAT4   lightColor;  
+        DirectX::XMFLOAT4   lightPos;   
+        DirectX::XMFLOAT4   lightColor; 
     };
 
     RenderingSystem();
@@ -57,7 +58,7 @@ public:
     void AddLight(const Light& light);
     void ClearLights();
 
-    static constexpr UINT kMaxProjectiles = 16; 
+    static constexpr UINT kMaxProjectiles = 16;   
 
     bool SpawnProjectile(const DirectX::XMFLOAT3& origin,
         const DirectX::XMFLOAT3& dir,
@@ -101,11 +102,14 @@ public:
         return m_gbufferSrvHeap.Get();
     }
 
+    void EnsureVelocitySRV(ID3D12Device* device, ID3D12Resource* velocityResource);
+    D3D12_GPU_DESCRIPTOR_HANDLE GetVelocitySRVGPU() const { return m_velocitySRVGPU; }
+
 private:
     void CreateLightBuffers(ID3D12Device* device);
     void CreateFullscreenQuad(ID3D12Device* device);
     void CreateLightingPassPipeline(ID3D12Device* device);
-    void CreateLightVisPipeline(ID3D12Device* device);   
+    void CreateLightVisPipeline(ID3D12Device* device);  
 
     void RenderLightGizmos(ID3D12GraphicsCommandList* cmdList,
         D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle,
@@ -170,7 +174,7 @@ private:
     bool m_iblReady = false;
 
     Microsoft::WRL::ComPtr<ID3D12Resource> m_shadowMapSRVResource; 
-    UINT m_shadowSrvSlot = 0;   
+    UINT m_shadowSrvSlot = 0;  
 
     void EnsureShadowSRV(ID3D12Device* device, ID3D12Resource* shadowResource);
 
@@ -189,4 +193,7 @@ private:
 
     Microsoft::WRL::ComPtr<ID3D12Resource> m_historySRVResource[2];
     bool m_historySRVCreated[2] = { false, false };
+
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_velocitySRVResource;
+    D3D12_GPU_DESCRIPTOR_HANDLE m_velocitySRVGPU = {};
 };

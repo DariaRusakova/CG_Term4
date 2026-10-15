@@ -25,8 +25,8 @@ void RenderingSystem::Initialize(ID3D12Device* device, UINT width, UINT height) 
     rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
     device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&m_gbufferRtvHeap));
 
-    m_shadowSrvSlot = GBuffer::GB_COUNT + 3;  
-    const UINT kTotalDescriptors = GBuffer::GB_COUNT + 3 + 1 + 1 + 2;  
+    m_shadowSrvSlot = GBuffer::GB_COUNT + 3;   
+    const UINT kTotalDescriptors = GBuffer::GB_COUNT + 3 + 1 + 1 + 2 + 1;
 
     D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
     srvHeapDesc.NumDescriptors = kTotalDescriptors;
@@ -45,11 +45,10 @@ void RenderingSystem::Initialize(ID3D12Device* device, UINT width, UINT height) 
 
     m_gbuffer->Initialize(device, width, height);
 
-    // Теперь передаем m_gbufferSrvHeap как параметр
     m_gbuffer->CreateDescriptors(device,
         m_gbufferRtvHeap->GetCPUDescriptorHandleForHeapStart(),
         m_gbufferSrvHeap->GetCPUDescriptorHandleForHeapStart(),
-        m_gbufferSrvHeap.Get(),  // <-- Вот как передается srvHeap
+        m_gbufferSrvHeap.Get(), 
         rtvSize, srvSize);
 
     CreateLightBuffers(device);
@@ -61,84 +60,13 @@ void RenderingSystem::Initialize(ID3D12Device* device, UINT width, UINT height) 
 
     ClearLights();
 
-    //// Основной направленный свет (солнце) - теплый оттенок
     Light sunLight;
     sunLight.type = LightType::Directional;
-    sunLight.direction = XMFLOAT3(0.6f, -0.25f, 0.4f);  // Направление солнца
-    sunLight.color = XMFLOAT4(1.0f, 0.9f, 0.7f, 1.0f);  // Теплый солнечный цвет
+    sunLight.direction = XMFLOAT3(0.6f, -0.25f, 0.4f);  
+    sunLight.color = XMFLOAT4(1.0f, 0.9f, 0.7f, 1.0f);  
     sunLight.intensity = 2.5f;
     AddLight(sunLight);
 
-
-    //Light sunLight2;
-    //sunLight2.type = LightType::Directional;
-    //sunLight2.direction = XMFLOAT3(-0.5f, -0.3f, -0.7f);
-    //sunLight2.color = XMFLOAT4(0.8f, 0.9f, 1.0f, 1.0f);
-    //sunLight2.intensity = 1.5f;
-    //AddLight(sunLight2);
-
-    // Точечный свет в центре атриума (теплый)
-    //Light centerLight;
-    //centerLight.type = LightType::Point;
-    //centerLight.position = XMFLOAT3(0.0f, 4.0f, 0.0f);
-    //centerLight.color = XMFLOAT4(1.0f, 0.85f, 0.6f, 1.0f);
-    //centerLight.intensity = 5.0f;
-    //centerLight.range = 15.0f;
-    //AddLight(centerLight);
-
-    //Light ambient;
-    //ambient.type = LightType::Point;
-    //ambient.position = XMFLOAT3(0.0f, 6.0f, 0.0f);
-    //ambient.color = XMFLOAT4(0.8f, 0.85f, 1.0f, 1.0f);
-    //ambient.intensity = 1.0f;
-    //ambient.range = 30.0f;
-    //AddLight(ambient);
-
-    ////// Боковые точечные источники для подсветки колонн
-    //Light leftColumn;
-    //leftColumn.type = LightType::Point;
-    //leftColumn.position = XMFLOAT3(-6.0f, 3.0f, -3.0f);
-    //leftColumn.color = XMFLOAT4(0.9f, 0.8f, 0.7f, 1.0f);
-    //leftColumn.intensity = 10.0f;
-    //leftColumn.range = 10.0f;
-    //AddLight(leftColumn);
-
-    //Light rightColumn;
-    //rightColumn.type = LightType::Point;
-    //rightColumn.position = XMFLOAT3(6.0f, 3.0f, 3.0f);
-    //rightColumn.color = XMFLOAT4(0.9f, 0.8f, 0.7f, 1.0f);
-    //rightColumn.intensity = 10.0f;
-    //rightColumn.range = 10.0f;
-    //AddLight(rightColumn);
-
-    //////// Свет сзади для подсветки задней стены
-    //Light backWall;
-    //backWall.type = LightType::Point;
-    //backWall.position = XMFLOAT3(0.0f, 5.0f, -8.0f);
-    //backWall.color = XMFLOAT4(1.0f, 0.85f, 0.7f, 1.0f);
-    //backWall.intensity = 8.0f;
-    //backWall.range = 12.0f;
-    //AddLight(backWall);
-
-    //////// Передний свет для подсветки входа
-    //Light frontLight;
-    //frontLight.type = LightType::Point;
-    //frontLight.position = XMFLOAT3(0.0f, 3.0f, 8.0f);
-    //frontLight.color = XMFLOAT4(0.8f, 0.9f, 1.0f, 1.0f);  // Немного холоднее для контраста
-    //frontLight.intensity = 12.0f;
-    //frontLight.range = 14.0f;
-    //AddLight(frontLight);
-
-    //////// Spot свет сверху - как свет через окно
-    //Light skylight;
-    //skylight.type = LightType::Spot;
-    //skylight.position = XMFLOAT3(0.0f, 10.0f, 0.0f);
-    //skylight.direction = XMFLOAT3(0.0f, -1.0f, 0.1f);
-    //skylight.color = XMFLOAT4(1.0f, 0.95f, 0.85f, 1.0f);
-    //skylight.intensity = 25.0f;
-    //skylight.range = 25.0f;
-    //skylight.spotAngle = 40.0f * XM_PI / 180.0f;
-    //AddLight(skylight);
 
 
     m_globalIntensity = 0.1f;
@@ -148,12 +76,10 @@ void RenderingSystem::Initialize(ID3D12Device* device, UINT width, UINT height) 
 void RenderingSystem::CreateIBLResources(ID3D12Device* device,
     ID3D12GraphicsCommandList* cmdList)
 {
-    // Используем ОДИН общий SRV heap: m_gbufferSrvHeap.
-    // GBuffer: слоты 0..3, IBL: слоты 4..6 (сразу после GBuffer).
-    const UINT iblBase = GBuffer::GB_COUNT;   // = 4
-    UINT srvSize = m_srvDescriptorSize;        // сохранён в Initialize
+   
+    const UINT iblBase = GBuffer::GB_COUNT;  
+    UINT srvSize = m_srvDescriptorSize;       
 
-    // ---- Лямбда: загрузка DDS ----
     auto loadDDS = [&](const wchar_t* path,
         ComPtr<ID3D12Resource>& outTexture,
         std::unique_ptr<uint8_t[]>& outDdsData,
@@ -183,7 +109,6 @@ void RenderingSystem::CreateIBLResources(ID3D12Device* device,
             return true;
         };
 
-    // ---- Лямбда: загрузка + upload + барьер ----
     auto uploadAndBarrier = [&](const wchar_t* path,
         ComPtr<ID3D12Resource>& outTexture,
         bool* outIsCube) -> bool
@@ -195,10 +120,8 @@ void RenderingSystem::CreateIBLResources(ID3D12Device* device,
                 return false;
             }
 
-            // Сохраняем ddsData, чтобы буфер не удалился до WaitForGpu
             m_iblDdsData.push_back(std::move(ddsData));
 
-            // Upload buffer
             const UINT64 uploadSize = GetRequiredIntermediateSize(
                 outTexture.Get(), 0, (UINT)subresources.size());
 
@@ -237,12 +160,10 @@ void RenderingSystem::CreateIBLResources(ID3D12Device* device,
             barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
             cmdList->ResourceBarrier(1, &barrier);
 
-            // Держим upload-буфер живым до конца работы RenderingSystem
             m_iblUploadBuffers.push_back(uploadBuffer);
             return true;
         };
 
-    // ---- Загрузка трёх .dds ----
     bool isCube = false;
     if (!uploadAndBarrier(L"assets/ibl/IrradianceMap_BC6U.dds",
         m_irradianceMap, &isCube)) {
@@ -260,7 +181,6 @@ void RenderingSystem::CreateIBLResources(ID3D12Device* device,
         return;
     }
 
-    // ---- SRV: irradiance (TextureCube) — слот iblBase+0 ----
     {
         D3D12_CPU_DESCRIPTOR_HANDLE handle =
             m_gbufferSrvHeap->GetCPUDescriptorHandleForHeapStart();
@@ -277,7 +197,6 @@ void RenderingSystem::CreateIBLResources(ID3D12Device* device,
         device->CreateShaderResourceView(m_irradianceMap.Get(), &srvDesc, handle);
     }
 
-    // ---- SRV: prefiltered (TextureCube) — слот iblBase+1 ----
     {
         D3D12_CPU_DESCRIPTOR_HANDLE handle =
             m_gbufferSrvHeap->GetCPUDescriptorHandleForHeapStart();
@@ -299,7 +218,6 @@ void RenderingSystem::CreateIBLResources(ID3D12Device* device,
         (unsigned)iblBase);
     OutputDebugStringA(buf);
 
-    // ---- SRV: brdf_lut (Texture2D) — слот iblBase+2 ----
     {
         D3D12_CPU_DESCRIPTOR_HANDLE handle =
             m_gbufferSrvHeap->GetCPUDescriptorHandleForHeapStart();
@@ -324,7 +242,6 @@ void RenderingSystem::Resize(UINT width, UINT height) {
     m_width = width;
     m_height = height;
     m_gbuffer->Release();
-    // Нужно сохранить device для Resize или передавать его параметром
 }
 
 void RenderingSystem::AddLight(const Light& light) {
@@ -339,7 +256,6 @@ void RenderingSystem::ClearLights() {
     for (UINT i = 0; i < kMaxProjectiles; ++i) m_projectiles[i].alive = false;
 }
 
-// RenderingSystem.cpp
 
 void RenderingSystem::CreateLightBuffers(ID3D12Device* device) {
     D3D12_RESOURCE_DESC cbDesc = {};
@@ -364,7 +280,6 @@ void RenderingSystem::CreateLightBuffers(ID3D12Device* device) {
     heapProps.CreationNodeMask = 1;
     heapProps.VisibleNodeMask = 1;
 
-    // Создаем ресурс
     HRESULT hr = device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &cbDesc,
         D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_lightConstantBuffer));
 
@@ -372,7 +287,6 @@ void RenderingSystem::CreateLightBuffers(ID3D12Device* device) {
         throw std::runtime_error("Failed to create light constant buffer");
     }
 
-    // Маппим память
     D3D12_RANGE readRange = { 0, 0 };
     hr = m_lightConstantBuffer->Map(0, &readRange, &m_lightCBData);
     if (FAILED(hr)) {
@@ -644,6 +558,7 @@ for (uint i = 0; i < lightCount; i++) {
     if (type == 1) {
         L = normalize(-lights[i].direction.xyz);
 
+        
         if (i == 0) {
             float viewDepth = length(worldPos.xyz - cameraPos.xyz);
             int cascade = SelectCascade(viewDepth);
@@ -659,7 +574,7 @@ for (uint i = 0; i < lightCount; i++) {
     }
 
 
-
+    
     float3 radiance = lights[i].color_intensity.rgb *
                       lights[i].color_intensity.a * attenuation;
 
@@ -680,7 +595,8 @@ for (uint i = 0; i < lightCount; i++) {
     float3 color = ambient + Lo;
 
     if (dot(worldPos.xyz, worldPos.xyz) < 0.0001) {
-        float2 uv = position.xy / float2(1024.0, 768.0);  
+        // Мягкий градиент: сверху светлее, снизу темнее
+        float2 uv = position.xy / float2(1024.0, 768.0);   // хардкод разрешения
         float3 skyTop    = float3(0.15, 0.20, 0.30);
         float3 skyBottom = float3(0.03, 0.03, 0.05);
         float3 bg = lerp(skyBottom, skyTop, 1.0 - uv.y);
@@ -724,19 +640,16 @@ for (uint i = 0; i < lightCount; i++) {
 
     D3D12_ROOT_PARAMETER rootParams[3] = {};
 
-    // Param 0: GBuffer SRV (t0..t3)
     rootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     rootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     rootParams[0].DescriptorTable.NumDescriptorRanges = 1;
     rootParams[0].DescriptorTable.pDescriptorRanges = &gbufferRange;
 
-    // Param 1: CBV света
     rootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     rootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     rootParams[1].Descriptor.ShaderRegister = 0;
     rootParams[1].Descriptor.RegisterSpace = 0;
 
-    // Param 2: IBL SRV (t4..t6)
     rootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     rootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     rootParams[2].DescriptorTable.NumDescriptorRanges = 1;
@@ -784,7 +697,7 @@ for (uint i = 0; i < lightCount; i++) {
     shadowCmpSampler.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
     shadowCmpSampler.MinLOD = 0;
     shadowCmpSampler.MaxLOD = 0;
-    shadowCmpSampler.ShaderRegister = 2;   
+    shadowCmpSampler.ShaderRegister = 2;  
     shadowCmpSampler.RegisterSpace = 0;
     shadowCmpSampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
@@ -867,7 +780,7 @@ for (uint i = 0; i < lightCount; i++) {
     psoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
 
     psoDesc.SampleMask = UINT_MAX;
-    psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;  
+    psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE; 
     psoDesc.NumRenderTargets = 1;
     psoDesc.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
     psoDesc.DSVFormat = DXGI_FORMAT_UNKNOWN;
@@ -899,6 +812,11 @@ void RenderingSystem::Render(ID3D12GraphicsCommandList* cmdList,
     if (!m_lightCBData) {
         OutputDebugStringA("Light buffer not mapped\n");
         return;
+    }
+
+    ID3D12Resource* velocityRes = m_gbuffer->GetResource(GBuffer::GB_VELOCITY);
+    if (velocityRes) {
+        EnsureVelocitySRV(m_device.Get(), velocityRes);
     }
 
     memset(m_lightCBData, 0, 1536);
@@ -960,11 +878,14 @@ void RenderingSystem::Render(ID3D12GraphicsCommandList* cmdList,
     float albedoClear[] = { 0.0f, 0.0f, 0.0f, 1.0f };
     float dataClear[] = { 0.0f, 0.0f, 0.0f, 1.0f };
     float pbrClear[] = { 1.0f, 0.0f, 1.0f, 1.0f };
+    float velocityClear[] = { 0.0f, 0.0f, 0.0f, 1.0f };
 
     cmdList->ClearRenderTargetView(gbufferRTVs[GBuffer::GB_ALBEDO], albedoClear, 0, nullptr);
     cmdList->ClearRenderTargetView(gbufferRTVs[GBuffer::GB_WORLD_POS], dataClear, 0, nullptr);
     cmdList->ClearRenderTargetView(gbufferRTVs[GBuffer::GB_NORMAL], dataClear, 0, nullptr);
     cmdList->ClearRenderTargetView(gbufferRTVs[GBuffer::GB_PBR], pbrClear, 0, nullptr);
+    cmdList->ClearRenderTargetView(gbufferRTVs[GBuffer::GB_VELOCITY], velocityClear, 0, nullptr);
+
     cmdList->ClearDepthStencilView(dsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
 
     cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -1058,7 +979,6 @@ void RenderingSystem::Render(ID3D12GraphicsCommandList* cmdList,
     cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
     cmdList->DrawInstanced(4, 1, 0, 0);
 
-    // Gizmos (если есть живые снаряды)
     RenderLightGizmos(cmdList, m_lightingRTV, objects[0].viewProj);
 
 
@@ -1072,7 +992,6 @@ void RenderingSystem::Render(ID3D12GraphicsCommandList* cmdList,
         cmdList->ResourceBarrier(1, &b);
     }
 
-    // Возвращаем GBuffer в RENDER_TARGET для следующего кадра
     for (int i = 0; i < GBuffer::GB_COUNT; ++i) {
         barriers[i].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         barriers[i].Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
@@ -1101,7 +1020,6 @@ void RenderingSystem::Update(float deltaTime) {
     RebuildLightsFromProjectiles();
 }
 
-// RenderingSystem.cpp
 void RenderingSystem::CreateLightVisPipeline(ID3D12Device* device) {
     static const char* vsCode = R"(
     cbuffer LightVisCB : register(b0) {
@@ -1179,7 +1097,6 @@ void RenderingSystem::CreateLightVisPipeline(ID3D12Device* device) {
         throw std::runtime_error("LightVis PS compile failed");
     }
 
-    // Root signature: CBV b0
     D3D12_ROOT_PARAMETER rp = {};
     rp.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     rp.Descriptor.ShaderRegister = 0;
@@ -1196,12 +1113,11 @@ void RenderingSystem::CreateLightVisPipeline(ID3D12Device* device) {
     device->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(),
         IID_PPV_ARGS(&m_lightVisRootSig));
 
-    // PSO: без depth, alpha blending (аддитивный)
     D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
     pso.pRootSignature = m_lightVisRootSig.Get();
     pso.VS = { vs->GetBufferPointer(), vs->GetBufferSize() };
     pso.PS = { ps->GetBufferPointer(), ps->GetBufferSize() };
-    pso.InputLayout = { nullptr, 0 };  // процедурные вершины
+    pso.InputLayout = { nullptr, 0 };  
     pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     pso.NumRenderTargets = 1;
     pso.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
@@ -1213,7 +1129,6 @@ void RenderingSystem::CreateLightVisPipeline(ID3D12Device* device) {
     pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
     pso.SampleMask = UINT_MAX;
 
-    // Аддитивный блендинг: dst = src + dst
     auto& rt = pso.BlendState.RenderTarget[0];
     rt.BlendEnable = TRUE;
     rt.SrcBlend = D3D12_BLEND_ONE;
@@ -1227,7 +1142,6 @@ void RenderingSystem::CreateLightVisPipeline(ID3D12Device* device) {
     hr = device->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_lightVisPSO));
     if (FAILED(hr)) throw std::runtime_error("LightVis PSO create failed");
 
-    // Constant buffer для визуализации
     D3D12_HEAP_PROPERTIES hp = {}; hp.Type = D3D12_HEAP_TYPE_UPLOAD;
     D3D12_RESOURCE_DESC rd = {};
     rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
@@ -1246,7 +1160,6 @@ void RenderingSystem::CreateLightVisPipeline(ID3D12Device* device) {
 void RenderingSystem::RenderLightGizmos(ID3D12GraphicsCommandList* cmdList,
     D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle,
     const XMFLOAT4X4& viewProj) {
-    // Проверяем, есть ли вообще что рисовать
     bool any = false;
     for (UINT i = 0; i < kMaxProjectiles; ++i) {
         if (m_projectiles[i].alive) { any = true; break; }
@@ -1317,13 +1230,11 @@ void RenderingSystem::RebuildLightsFromProjectiles() {
     m_lights.clear();
     m_originalIntensities.clear();
 
-    // Статичные света (если есть)
     for (const Light& l : m_staticLights) {
         m_lights.push_back(l);
         m_originalIntensities.push_back(l.intensity);
     }
 
-    // Снаряды
     for (UINT i = 0; i < kMaxProjectiles; ++i) {
         const Projectile& p = m_projectiles[i];
         if (!p.alive) continue;
@@ -1344,7 +1255,6 @@ void RenderingSystem::RebuildLightsFromProjectiles() {
         m_originalIntensities.push_back(light.intensity);
     }
 
-    // Жёсткий лимит под шейдер
     if (m_lights.size() > 16) {
         m_lights.resize(16);
         m_originalIntensities.resize(16);
@@ -1414,7 +1324,7 @@ void RenderingSystem::CreateLightingColorTarget(ID3D12Device* device,
     m_lightingRTV = m_lightingRTVHeap->GetCPUDescriptorHandleForHeapStart();
     device->CreateRenderTargetView(m_lightingColor.Get(), nullptr, m_lightingRTV);
 
-    const UINT lightingSlot = 8;
+    const UINT lightingSlot = 9;
 
     D3D12_CPU_DESCRIPTOR_HANDLE h =
         m_gbufferSrvHeap->GetCPUDescriptorHandleForHeapStart();
@@ -1435,7 +1345,9 @@ void RenderingSystem::CreateLightingColorTarget(ID3D12Device* device,
 
     device->CreateShaderResourceView(m_lightingColor.Get(), &srvDesc, h);
 
-    OutputDebugStringA("[RS] lightingColor offscreen RT created (slot 8)\n");
+    char buf[128];
+    sprintf_s(buf, "[RS] lightingColor offscreen RT created (slot %u)\n", lightingSlot);
+    OutputDebugStringA(buf);
 }
 
 
@@ -1599,7 +1511,7 @@ void RenderingSystem::EnsureHistorySRVs(ID3D12Device* device,
     ID3D12Resource* history0,
     ID3D12Resource* history1) {
     ID3D12Resource* resources[2] = { history0, history1 };
-    const UINT slots[2] = { 9, 10 };
+    const UINT slots[2] = { 10, 11 };
 
     for (int i = 0; i < 2; ++i) {
         if (!resources[i]) continue;
@@ -1628,4 +1540,37 @@ void RenderingSystem::EnsureHistorySRVs(ID3D12Device* device,
         sprintf_s(buf, "[RS] History SRV created at slot %u\n", slots[i]);
         OutputDebugStringA(buf);
     }
+}
+
+void RenderingSystem::EnsureVelocitySRV(ID3D12Device* device,
+    ID3D12Resource* velocityResource)
+{
+    if (!velocityResource) return;
+    if (m_velocitySRVResource.Get() == velocityResource) return;
+
+    m_velocitySRVResource = velocityResource;
+
+    const UINT velocitySlot = 12;
+
+    D3D12_CPU_DESCRIPTOR_HANDLE h =
+        m_gbufferSrvHeap->GetCPUDescriptorHandleForHeapStart();
+    h.ptr += (UINT64)velocitySlot * m_srvDescriptorSize;
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC sd = {};
+    sd.Format = DXGI_FORMAT_R16G16_FLOAT;
+    sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    sd.Texture2D.MipLevels = 1;
+    sd.Texture2D.MostDetailedMip = 0;
+
+    device->CreateShaderResourceView(velocityResource, &sd, h);
+
+    D3D12_GPU_DESCRIPTOR_HANDLE gh =
+        m_gbufferSrvHeap->GetGPUDescriptorHandleForHeapStart();
+    gh.ptr += (UINT64)velocitySlot * m_srvDescriptorSize;
+    m_velocitySRVGPU = gh;
+
+    char buf[128];
+    sprintf_s(buf, "[RS] Velocity SRV created at slot %u\n", velocitySlot);
+    OutputDebugStringA(buf);
 }
